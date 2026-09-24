@@ -1,4 +1,4 @@
-You are working on: making `mergeBranch` in src/server/git.ts recover a half-finished approval merge left in the shared parent checkout by a dead delivery worker (abort Radulf's own abandoned merge, record an already-landed one as `alreadyMerged`, refuse a foreign in-progress merge by name), and making the dirty-checkout error and the stale reaper's Needs Attention reason actionable.
+You are working on: removing the dead `DIRTY_CHECKOUT_ERROR` export from `src/server/git.ts` and inlining the actionable dirty-checkout error message in `mergeBranch` (reviewer fix-up for the half-finished-approval-merge recovery card)
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,17 +36,14 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Task-specific hints:
-- Run vitest via the project-local binary exactly as the task states, e.g.
-  `node_modules/.bin/vitest run src/server/git.test.ts -t "mergeBranch recovery"`.
-  Never `make test`, `make check`, or a bare `vitest run` — those run everything.
-- The git-state rule above applies to THIS working directory only. Tests in
-  src/server/git.test.ts legitimately create throwaway repos under
-  `os.tmpdir()` and run `git merge`, `git checkout`, etc. inside them via the
-  sync `git(dir, ...)` helper from `@/testUtils/gitRepo` — that is fine and expected.
-- In src/server/git.ts use the existing helpers: `git(cwd, ...args)` throws on
-  a non-zero exit; `tryGit(cwd, ...args)` returns `{ ok, out }`. Match the
-  surrounding style; keep new fields on `mergeBranch`'s return type optional so
-  the existing `vi.fn()` mocks in other test files keep compiling.
-- Reason/error strings must match the task text literally where it quotes
-  them — tests and the evaluator grep for those exact phrases.
+Hints for this card:
+- Only `src/server/git.ts` should change. Do not edit tests, docs, or any
+  other source file — the existing test "names the dirty checkout and tells
+  the operator how to recover" in `src/server/git.test.ts` already asserts
+  the message contains the repo path, "uncommitted changes" and "Retry merge",
+  and it must keep passing unchanged.
+- Use the repo's local binaries (`node_modules/.bin/vitest`,
+  `node_modules/.bin/tsc`, `node_modules/.bin/eslint`), not `npx`.
+- Do not introduce any other constant or helper for the message; the whole
+  point is that the bare literal `"target checkout has uncommitted changes"`
+  must no longer appear in the file — the path must be interpolated inline.
