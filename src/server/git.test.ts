@@ -395,6 +395,28 @@ describe("mergeBranch recovery (half-finished merge in the parent checkout)", ()
       git(dir, "merge", "--abort");
     }
   });
+
+  it("recognises a merge that already landed and records it as alreadyMerged", async () => {
+    // A dead worker committed the merge but died before the DB write.
+    git(dir, "merge", "--no-ff", "-m", "ralph: merge x", "ralph/x");
+    const merged = git(dir, "rev-parse", "HEAD");
+    // Base moved on afterwards; the merge commit is no longer the tip.
+    fs.writeFileSync(path.join(dir, "after.txt"), "after\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "after");
+    const tip = git(dir, "rev-parse", "HEAD");
+    const count = git(dir, "rev-list", "--count", "HEAD");
+
+    let called = false;
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x again", () => {
+      called = true;
+    });
+
+    expect(result).toEqual({ ok: true, mergeCommit: merged, alreadyMerged: true });
+    expect(called).toBe(false);
+    expect(git(dir, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(dir, "rev-list", "--count", "HEAD")).toBe(count);
+  });
 });
 
 describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window)", () => {
