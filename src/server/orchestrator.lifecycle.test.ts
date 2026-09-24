@@ -2210,6 +2210,43 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(delivery()).toMatchObject({ status: "finished", ok: 1 });
       expect(db.select().from(repoLeases).all()).toEqual([]);
     });
+
+    it("a draining worker stops claiming pending deliveries", async () => {
+      card("drain-pending", "reviewing");
+      plan("drain-pending");
+      completedRun("drain-pending", "drain-pending-run");
+      const orchestrator = new Orchestrator({ autoStart: false });
+      orchestrator.startDraining();
+
+      // The delivery lands after SIGTERM: another worker must pick it up.
+      db.insert(reviewDeliveries)
+        .values({
+          id: "drain-pending-delivery",
+          runId: "drain-pending-run",
+          cardId: "drain-pending",
+          repoId: "repo-1",
+          fromStatus: "review",
+          approvedBy: "human",
+          status: "pending",
+          createdAt: now(),
+        })
+        .run();
+
+      orchestrator.pump();
+      await settle();
+
+      expect(
+        db
+          .select()
+          .from(reviewDeliveries)
+          .where(eq(reviewDeliveries.id, "drain-pending-delivery"))
+          .get(),
+      ).toMatchObject({ status: "pending", workerId: null });
+      expect(db.select().from(repoLeases).all()).toEqual([]);
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      // A pending, unclaimed delivery is not this worker's work.
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+    });
   });
 
   describe("failed-step retries", () => {

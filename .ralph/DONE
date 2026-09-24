@@ -1,0 +1,5 @@
+Graceful worker drain now waits for review deliveries this worker has claimed as `running`.
+- `Orchestrator.hasInFlightWork()` (src/server/orchestrator.ts) counts a `review_deliveries` row with `status = "running"` and `workerId = this.workerId` as in-flight, so src/server/shutdown.ts does not report idle mid-merge.
+- Other workers' running deliveries, finished deliveries, and pending (unclaimed) deliveries do not count.
+- A draining worker's `pump()` no longer claims pending deliveries, leaving them for other workers.
+- Tests in src/server/orchestrator.lifecycle.test.ts ("graceful shutdown"): ownership counting, mid-merge wait, and the new "a draining worker stops claiming pending deliveries" test (row stays pending/unclaimed, no repo lease, mergeBranch not called, hasInFlightWork false).
