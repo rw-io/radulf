@@ -158,8 +158,10 @@ take them at multi-host: event notification and lease storage.
 the state volume. Only the worker keeps the sandbox security relaxations; the
 web container drops them. Each role has its own health check, the worker's
 being its heartbeat row. `SIGTERM` on a worker stops claiming, finishes the
-current iteration boundary, hands looping cards back to Ready, and exits within
-the existing budget. `POST /api/restart` restarts the process it is called on.
+current iteration boundary, hands looping cards back to Ready, lets a review
+delivery it has already claimed (a seconds-long merge, push or pull request)
+run to completion, and exits within the existing budget. `POST /api/restart`
+restarts the process it is called on.
 
 ## Data model
 

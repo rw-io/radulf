@@ -267,8 +267,9 @@ confirm an override took.
 | Add workers | `docker compose up -d --scale worker=2` |
 | Roll back | `git checkout <tag> && docker compose up -d --build` |
 
-Stopping a worker waits up to 45 seconds so an in-flight run can drain, the
-same shutdown path a `SIGTERM` takes on a host.
+Stopping a worker waits up to 45 seconds so an in-flight run, or a review
+delivery it has claimed, can drain — the same shutdown path a `SIGTERM` takes
+on a host.
 
 Migrations run forward at boot and are not reversed by a rollback. Take a
 backup before updating. The database is in WAL mode, so copy it through
