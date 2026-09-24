@@ -63,7 +63,13 @@ the pieces that make that safe are:
   checkpointed loop goes back to Ready and the pump opens a fresh run on the
   first unchecked task, while every other kind of run parks the card in Needs
   Attention. It also parks cards whose claimed review delivery died mid-merge
-  and deletes the stale `workers` rows.
+  and deletes the stale `workers` rows. A worker that is stopped deliberately
+  does not wait for a peer to notice: `releaseOwnedWork()` (called from the
+  shutdown drain in `src/server/shutdown.ts` on both the clean and the
+  timed-out path) stops its own timers, runs the reaper's per-run and
+  per-delivery bodies over its own `running` rows with exit reason `worker
+  shut down before this stage finished`, releases its `repo_leases` rows and
+  deletes its own `workers` row before `process.exit`.
 - **The control column.** A web process holds no `AbortController` for a run
   another process owns, so cancel, reset and pause also write the nullable
   `runs.control` column (`cancel` | `pause`); the owning worker polls that
