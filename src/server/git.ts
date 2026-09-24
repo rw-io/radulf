@@ -399,7 +399,10 @@ export async function mergeBranch(
   const dirty = await git(repoPath, "status", "--porcelain");
   if (dirty) {
     await restore();
-    return { ok: false, error: "target checkout has uncommitted changes" };
+    return {
+      ok: false,
+      error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+    };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before
   // committing — the reviewed diff excludes it, so the merge must too.

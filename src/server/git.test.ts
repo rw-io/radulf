@@ -417,6 +417,19 @@ describe("mergeBranch recovery (half-finished merge in the parent checkout)", ()
     expect(git(dir, "rev-parse", "HEAD")).toBe(tip);
     expect(git(dir, "rev-list", "--count", "HEAD")).toBe(count);
   });
+
+  it("names the dirty checkout and tells the operator how to recover, without starting a merge", async () => {
+    fs.writeFileSync(path.join(dir, "scratch.txt"), "wip\n");
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(dir);
+    expect(result.error).toContain("uncommitted changes");
+    expect(result.error).toContain("Retry merge");
+    // No merge was started.
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+  });
 });
 
 describe("mergeBranch onCommitted callback (spec 20: narrow the tampering window)", () => {
