@@ -188,4 +188,60 @@ describe("releaseOwnedWork", () => {
     vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS * 3);
     expect(worker(o.workerId)).toBeUndefined();
   });
+
+  it("fails its own running review delivery, frees its lease and parks the card", () => {
+    const o = new Orchestrator({ autoStart: false });
+    seedCard("c1", { status: "reviewing" });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedDelivery("d1", "c1", "r1", { status: "running", workerId: o.workerId, claimedAt: now() });
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo-1", workerId: o.workerId, acquiredAt: now() }).run();
+
+    expect(o.releaseOwnedWork()).toEqual({ runs: 0, deliveries: 1 });
+
+    expect(delivery("d1").status).toBe("finished");
+    expect(delivery("d1").ok).toBe(0);
+    expect(delivery("d1").error).toContain("press Retry merge");
+    expect(delivery("d1").error).toContain("/tmp/repo-1");
+    expect(lease("/tmp/repo-1")).toBeUndefined();
+    expect(card("c1").status).toBe("needs_attention");
+  });
+
+  it("a fresh orchestrator pumps the released card at boot without waiting for the stale window", () => {
+    const o = new Orchestrator({ autoStart: false });
+    seedCard("c1", { status: "looping" });
+    db.insert(plans)
+      .values({
+        id: "p1",
+        cardId: "c1",
+        version: 1,
+        planMd: "## Tasks\n- [x] a\n- [ ] b\n",
+        promptMd: "",
+        acceptanceCriteria: "",
+        createdAt: now(),
+      })
+      .run();
+    const planPath = planStatePath("c1");
+    fs.mkdirSync(path.dirname(planPath), { recursive: true });
+    fs.writeFileSync(planPath, "## Tasks\n- [x] a\n- [ ] b\n");
+    const worktreePath = path.join(testDataDir, "worktrees", "c1-run");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    seedRun("r1", "c1", { workerId: o.workerId, worktreePath });
+
+    expect(o.releaseOwnedWork()).toEqual({ runs: 1, deliveries: 0 });
+    expect(card("c1").status).toBe("ready");
+
+    // Spying on the claim lets the boot pump reach the card without starting a
+    // real loop harness: the point is that a replacement worker sees the card
+    // as claimable the moment it boots, not `workerStaleSeconds` later.
+    const claim = vi.spyOn(Orchestrator.prototype, "claimLoopRun").mockReturnValue(null);
+    const fresh = new Orchestrator();
+
+    expect(claim).toHaveBeenCalledWith("c1");
+    expect(card("c1").status).toBe("ready");
+    expect(run("r1").status).toBe("interrupted");
+    expect(worker(o.workerId)).toBeUndefined();
+
+    claim.mockRestore();
+    fresh.startDraining();
+  });
 });
