@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
 import fs from "node:fs";
 import path from "node:path";
@@ -332,6 +332,68 @@ describe("mergeBranch concurrency (spec 20: different cards, same repo)", () => 
     expect(execFileSync("git", ["-C", tmpDir, "rev-parse", "--abbrev-ref", "HEAD"], {
       encoding: "utf8",
     }).trim()).toBe(defaultBranch);
+  });
+});
+
+describe("mergeBranch recovery (half-finished merge in the parent checkout)", () => {
+  let dir: string;
+  let defaultBranch: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-merge-recovery-"));
+    git(dir, "init");
+    git(dir, "config", "user.email", "test@test.com");
+    git(dir, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(dir, "README.md"), "base\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "initial");
+    defaultBranch = git(dir, "rev-parse", "--abbrev-ref", "HEAD");
+
+    git(dir, "checkout", "-b", "ralph/x");
+    fs.writeFileSync(path.join(dir, "x.txt"), "x\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "x change");
+    git(dir, "checkout", defaultBranch);
+
+    git(dir, "checkout", "-b", "other");
+    fs.writeFileSync(path.join(dir, "other.txt"), "other\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "other change");
+    git(dir, "checkout", defaultBranch);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("aborts Radulf's own abandoned merge of the run branch and redoes it", async () => {
+    // A dead worker left `merge --no-commit ralph/x` half-done in the parent.
+    git(dir, "merge", "--no-ff", "--no-commit", "ralph/x");
+    expect(git(dir, "rev-parse", "MERGE_HEAD")).toBe(git(dir, "rev-parse", "ralph/x"));
+
+    const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+    expect(result.ok).toBe(true);
+    expect(() => git(dir, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(git(dir, "rev-parse", "--abbrev-ref", "HEAD")).toBe(defaultBranch);
+    expect(git(dir, "log", "--oneline")).toContain("ralph: merge x");
+    expect(fs.existsSync(path.join(dir, "x.txt"))).toBe(true);
+  });
+
+  it("refuses a foreign in-progress merge by name and leaves it untouched", async () => {
+    git(dir, "merge", "--no-ff", "--no-commit", "other");
+    try {
+      const result = await mergeBranch(dir, defaultBranch, "ralph/x", "ralph: merge x");
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(dir);
+      expect(result.error).toContain("outside Radulf");
+      // The foreign merge is exactly as we found it.
+      expect(git(dir, "rev-parse", "MERGE_HEAD")).toBe(git(dir, "rev-parse", "other"));
+      expect(git(dir, "status", "--porcelain")).not.toBe("");
+    } finally {
+      git(dir, "merge", "--abort");
+    }
   });
 });
 

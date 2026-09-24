@@ -347,6 +347,25 @@ export async function mergeBranch(
       await tryGit(repoPath, "checkout", original);
     }
   };
+  // A delivery worker can die between `merge --no-commit` and `commit` below,
+  // leaving the shared parent checkout with MERGE_HEAD set. The next attempt
+  // must not run `checkout`/`status` on top of that half-finished merge. If
+  // MERGE_HEAD is this very run branch, it is Radulf's own abandoned merge —
+  // abort it and start over. Anything else is someone else's merge, which we
+  // refuse to touch.
+  const inProgress = await tryGit(repoPath, "rev-parse", "-q", "--verify", "MERGE_HEAD");
+  if (inProgress.ok) {
+    const sha = inProgress.out.trim();
+    const branchSha = (await tryGit(repoPath, "rev-parse", branch)).out.trim();
+    if (sha === branchSha) {
+      await tryGit(repoPath, "merge", "--abort");
+    } else {
+      return {
+        ok: false,
+        error: `a merge started outside Radulf is in progress in ${repoPath} (MERGE_HEAD ${sha}) — finish or abort it there (git merge --continue / git merge --abort) before retrying`,
+      };
+    }
+  }
   if (original !== baseBranch) {
     const co = await tryGit(repoPath, "checkout", baseBranch);
     if (!co.ok) return { ok: false, error: `cannot checkout ${baseBranch}: ${co.out}` };
