@@ -1,14 +1,20 @@
-# Evaluation notes (attempt started 2026-09-24T19:03:56Z)
-
-- Read .ralph/DONE and `git diff ralph/improve-1790275413089...HEAD` — 6 files changed (git.ts, git.test.ts, reviewService.ts, reviewService.test.ts, orchestrator.ts, orchestrator.reaper.test.ts). No unrelated files.
-- vitest run src/server/git.test.ts → exit 0 (33 passed)
-- vitest run src/server/reviewService.test.ts → exit 0 (15 passed)
-- vitest run src/server/orchestrator.reaper.test.ts → exit 0 (10 passed)
-- vitest run reviewService.pr.test.ts orchestrator.lifecycle.test.ts → exit 0 (122 passed)
-- grep -Fq 'target checkout has uncommitted changes"' src/server/git.ts → SUCCEEDS at line 339 (DIRTY_CHECKOUT_ERROR const) — criterion requires it to FAIL → CRITERION FAILED
-- all other grep criteria PASS; alreadyMerged count in git.test.ts = 2
-- tsc --noEmit → exit 0
-- eslint on the 6 changed files → exit 0
-- gate (make check) exit 0 per .ralph/GATE.md, not re-run
-- Deeper review: DIRTY_CHECKOUT_ERROR unused outside git.ts (dead export), detaches mergeBranch JSDoc; foreign-merge/own-merge/alreadyMerged/reaper logic matches card; no unrelated changes.
-- VERDICT written: revise (single failing criterion: bare 'target checkout has uncommitted changes"' literal at git.ts:339). SUMMARY.md written. No doc edits (revise).
+# Evaluation notes (attempt started 2026-09-24T19:12Z)
+- read .ralph/DONE; diff ralph/improve-1790275413089...HEAD touches only git.ts, orchestrator.ts, reviewService.ts + 3 tests
+- grep -Fq 'target checkout has uncommitted changes"' git.ts -> rc=1 (PASS)
+- grep -c DIRTY_CHECKOUT_ERROR git.ts -> 0 (PASS)
+- grep 'target checkout ${repoPath} has uncommitted changes' git.ts -> rc=0 (PASS)
+- grep 'Retry merge' git.ts -> rc=0 (PASS)
+- grep -A1 'cover. */' | grep mergeBranch -> rc=0 (PASS, JSDoc attached)
+- all card-wide greps (MERGE_HEAD, merge-base/--is-ancestor, --ancestry-path, alreadyMerged x4, outside Radulf, press Retry merge x2) -> rc=0 (PASS)
+- git diff --name-only HEAD~1 -> empty (HEAD is a no-op task-2 commit); edc634f..HEAD -> only src/server/git.ts (PASS in spirit)
+- vitest run src/server/git.test.ts -> 33 passed, exit 0 (PASS)
+- vitest run reviewService.test.ts -> 15 passed, exit 0 (PASS)
+- vitest run orchestrator.reaper.test.ts -> 10 passed, exit 0 (PASS)
+- tsc --noEmit -> exit 0 (PASS)
+- eslint on 6 files -> exit 0 (PASS)
+- make check: gate ran before attempt, exit 0 in 56s (PASS, not re-run)
+- code review: mergeBranch MERGE_HEAD/abort/foreign-error/is-ancestor/ancestry-path all match the card; deliver() forwards alreadyMerged; reaper reason names repo path + Retry merge; activity renders raw payload so alreadyMerged shows
+- scratch scenario (temp test, deleted afterwards): own abandoned merge -> aborted+redone on base; 2nd call -> alreadyMerged w/ same merge commit; empty run branch -> alreadyMerged w/ base tip (edge, per card's fallback rule)
+- previous revise feedback (edc634f) fully addressed: DIRTY_CHECKOUT_ERROR gone, message inlined, JSDoc reattached, only git.ts changed
+- VERDICT: approve — writing EVALUATION.md + SUMMARY.md, then doc reconciliation (TROUBLESHOOTING, ARCHITECTURE, IMPROVEMENT_RUNS)
+- docs reconciled: docs/TROUBLESHOOTING.md, docs/ARCHITECTURE.md, docs/IMPROVEMENT_RUNS.md (no other paths touched)
