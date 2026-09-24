@@ -2178,6 +2178,38 @@ describe("Orchestrator cancellation lifecycle", () => {
         .run();
       expect(orchestrator.hasInFlightWork()).toBe(false);
     });
+
+    it("waits for a review delivery mid-merge to finish before reporting idle", async () => {
+      card("drain-delivery", "review");
+      plan("drain-delivery");
+      completedRun("drain-delivery", "drain-delivery-run");
+      const merge = deferred<{ ok: boolean; mergeCommit: string }>();
+      mocks.mergeBranch.mockReturnValueOnce(merge.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      const approval = orchestrator.approve("drain-delivery-run");
+      await vi.waitFor(() => expect(mocks.mergeBranch).toHaveBeenCalledTimes(1));
+      // SIGTERM lands while the merge is still running.
+      orchestrator.startDraining();
+
+      const delivery = () =>
+        db
+          .select()
+          .from(reviewDeliveries)
+          .where(eq(reviewDeliveries.runId, "drain-delivery-run"))
+          .get();
+      expect(getCard("drain-delivery").status).toBe("reviewing");
+      expect(delivery()).toMatchObject({ status: "running", workerId: orchestrator.workerId });
+      // The drain must not report idle while our claimed delivery is mid-merge.
+      expect(orchestrator.hasInFlightWork()).toBe(true);
+
+      merge.resolve({ ok: true, mergeCommit: "merge-commit" });
+      await expect(approval).resolves.toEqual({ ok: true });
+      await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
+      expect(getCard("drain-delivery").status).toBe("done");
+      expect(delivery()).toMatchObject({ status: "finished", ok: 1 });
+      expect(db.select().from(repoLeases).all()).toEqual([]);
+    });
   });
 
   describe("failed-step retries", () => {
