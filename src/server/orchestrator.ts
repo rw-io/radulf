@@ -1372,10 +1372,12 @@ export class Orchestrator {
     this.attentionTimer = null;
   }
 
-  /** True while any repo has a run in flight — used by graceful shutdown.
+  /** True while this worker owns a running run OR a running review delivery
+   * (merge / push / PR of an approved card, whose card sits in `reviewing`),
+   * or any repo has a card in a running status — used by graceful shutdown.
    * Deliberately global, unlike pipelineBusy(repoId). */
   hasInFlightWork(): boolean {
-    return this.ownsRunningRun() || this.cardInStatus(RUNNING_STATUSES);
+    return this.ownsRunningRun() || this.ownsRunningDelivery() || this.cardInStatus(RUNNING_STATUSES);
   }
 
   /** True if a run row claimed by this worker is still `running`. */
@@ -1385,6 +1387,18 @@ export class Orchestrator {
         .select({ id: runs.id })
         .from(runs)
         .where(and(eq(runs.status, "running"), eq(runs.workerId, this.workerId)))
+        .limit(1)
+        .get() !== undefined
+    );
+  }
+
+  /** True if a review delivery claimed by this worker (ReviewService.claimDelivery flipped it to running) has not finished yet. */
+  private ownsRunningDelivery(): boolean {
+    return (
+      db
+        .select({ id: reviewDeliveries.id })
+        .from(reviewDeliveries)
+        .where(and(eq(reviewDeliveries.status, "running"), eq(reviewDeliveries.workerId, this.workerId)))
         .limit(1)
         .get() !== undefined
     );

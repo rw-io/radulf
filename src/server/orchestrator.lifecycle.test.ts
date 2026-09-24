@@ -101,6 +101,8 @@ const {
   plans,
   repos,
   reviews,
+  reviewDeliveries,
+  repoLeases,
   runs,
   settings,
   worktrees,
@@ -281,6 +283,8 @@ describe("Orchestrator cancellation lifecycle", () => {
     db.delete(improvementRuns).run();
     db.delete(reviews).run();
     db.delete(iterations).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(repoLeases).run();
     db.delete(runs).run();
     db.delete(plans).run();
     db.delete(events).run();
@@ -2127,6 +2131,52 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(mocks.runHarness).toHaveBeenCalledTimes(1);
       // Shutdown can now finish instead of burning its whole budget.
       await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
+    });
+
+    it("counts a review delivery this worker is running as in-flight work", () => {
+      card("drain-owned-delivery", "reviewing");
+      plan("drain-owned-delivery");
+      completedRun("drain-owned-delivery", "drain-owned-delivery-run");
+      const orchestrator = new Orchestrator({ autoStart: false });
+      // Card is `reviewing` and no run is running — nothing in flight yet.
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      db.insert(reviewDeliveries)
+        .values({
+          id: "drain-owned-delivery-1",
+          runId: "drain-owned-delivery-run",
+          cardId: "drain-owned-delivery",
+          repoId: "repo-1",
+          fromStatus: "review",
+          approvedBy: "human",
+          status: "running",
+          workerId: orchestrator.workerId,
+          createdAt: now(),
+          claimedAt: now(),
+        })
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(true);
+
+      // Another worker's running delivery is not ours to drain.
+      db.update(reviewDeliveries)
+        .set({ workerId: "some-other-worker" })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      // A finished delivery we owned no longer counts.
+      db.update(reviewDeliveries)
+        .set({ workerId: orchestrator.workerId, status: "finished" })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      // A pending (unclaimed) delivery is not in flight on any worker.
+      db.update(reviewDeliveries)
+        .set({ status: "pending", workerId: null })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
     });
   });
 
