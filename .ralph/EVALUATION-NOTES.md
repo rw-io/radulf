@@ -1,0 +1,13 @@
+# Evaluation notes (running)
+- 20:08 read .ralph/DONE, git log (5 task commits), diff --stat: 6 files all under src/server/
+- 20:10 all 16 grep/test -f static criteria: PASS (interruptRun x2, failDelivery x2, releaseOwnedWork signature in both files, 'owned by this worker', HEARTBEAT_INTERVAL_MS + claimLoopRun in shutdown test)
+- 20:10 npx vitest run repoLeases.test.ts / orchestrator.shutdown.test.ts / shutdown.test.ts: PASS (each; 9 + 6 + 2 tests)
+- 20:10 npx vitest run orchestrator.reaper.test.ts ALONE: PASS (10 tests)
+- 20:11 reaper + shutdown test files run TOGETHER: 5/5 FAIL — "boot recovery reaps a dead worker's run..." asserts /tmp/runtmp/r-live exists; shutdown test's beforeEach rmSync(runScratchRoot()) / fresh Orchestrator recover() sweeps the shared os.tmpdir()/runtmp concurrently. Pre-existing pairs (reaper+lifecycle, reaper+sandbox) 0/3 fail.
+- 20:12 full `npx vitest run` x2: exit 0 (142 files, 1384 tests) — gate also exit 0. Flake is selection-dependent, not in the gate.
+- 20:12 npx vitest run boot/workers/orchestrator.claim tests: PASS (15 tests)
+- 20:12 npx tsc --noEmit: exit 0; npx eslint (6 files): exit 0
+- 20:12 git status --porcelain: only .ralph/ untracked; diff touches only src/server/ (6 files)
+- 20:15 code review: dispose-first ordering OK (heartbeatWorker is an upsert); all queries filter workerId; reaper behaviour unchanged (abort is a no-op for reaped peer rows); finishRun CAS prevents overwrite; boot.ts wiring compiles.
+- 20:17 VERDICT written: approve, 1 important (reaper+shutdown test files collide on shared /tmp/runtmp when run as a 2-file selection), 2 suggestions. SUMMARY.md written.
+- 20:19 docs reconciled (approve-only): TROUBLESHOOTING.md (new exit reason entry + delivery-message note), DOCKER.md (drain hand-back), ARCHITECTURE.md (releaseOwnedWork in heartbeat bullet).
