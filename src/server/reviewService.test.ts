@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 import { git, initScratchRepo } from "@/testUtils/gitRepo";
@@ -27,7 +27,8 @@ vi.mock("./git", async (importOriginal) => ({
 const testDataDir = setupTestDataDir("radulf-reviewService-");
 const { loadBaseline, saveBaseline, snapshotRepoIntegrity } = await import("./integrity");
 
-const { db, cards, plans, runs, repos, reviews, reviewDeliveries, repoLeases, refWrites, now } = await import("@/db");
+const { db, cards, plans, runs, repos, reviews, reviewDeliveries, repoLeases, refWrites, events, now } =
+  await import("@/db");
 const { ReviewService } = await import("./reviewService");
 const { planStatePath } = await import("./bookkeeping");
 const { pendingReplanFeedback } = await import("./planningService");
@@ -337,6 +338,33 @@ describe("ReviewService — spec 25 worker-side delivery", () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({ sha: "abc", workerId: "worker-test" });
     expect(deps.moveCard).toHaveBeenCalledWith("card-deliver", "reviewing", "done");
+  });
+
+  it("an already-landed merge is recorded, not redone: alreadyMerged reaches review.decided and completeApproval still runs", async () => {
+    seedCard("card-landed");
+    const planId = seedPlan("card-landed");
+    const { id: runId } = seedLoopRun("card-landed", planId);
+    // A dead worker already committed the merge; mergeBranch reports it
+    // without invoking onCommitted, so no ref write is recorded now.
+    mocks.mergeBranch.mockResolvedValueOnce({ ok: true, mergeCommit: "abc", alreadyMerged: true });
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).approve(runId);
+
+    expect(result).toEqual({ ok: true });
+    expect(deps.moveCard).toHaveBeenCalledWith("card-landed", "reviewing", "done");
+    expect(mocks.removeWorktree).toHaveBeenCalledTimes(1);
+    const review = db.select().from(reviews).where(eq(reviews.runId, runId)).get();
+    expect(review).toMatchObject({ decision: "approved", mergeCommit: "abc" });
+    expect(db.select().from(refWrites).all()).toEqual([]);
+    const decided = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, "card-landed"), eq(events.type, "review.decided")))
+      .orderBy(desc(events.id))
+      .get();
+    expect(decided).toBeDefined();
+    expect(JSON.parse(decided!.payload)).toMatchObject({ decision: "approved", mergeCommit: "abc", alreadyMerged: true });
   });
 
   it("a passive approve only enqueues the delivery; claimPendingDeliveries() on a worker runs it", async () => {

@@ -151,9 +151,24 @@ and the card returns to Needs Attention; restart it.
 The merge is the one moment Radulf writes to your checkout, so it checks
 preconditions first and aborts cleanly rather than leaving a half-merge.
 
-**`target checkout has uncommitted changes`**
+**`target checkout <repo path> has uncommitted changes — commit or stash them there, then press Retry merge`**
 The merge target must be clean. The work is not lost — clean the tree, then
-`POST /api/cards/:id/retry-merge`.
+press Retry merge (`POST /api/cards/:id/retry-merge`).
+
+**`worker <id> stopped heartbeating during delivery — press Retry merge; …`**
+The worker running the merge died partway through and the stale reaper parked
+the card. Press Retry merge: if the worker left its own `--no-commit` merge of
+the run branch half-finished in the parent checkout (`MERGE_HEAD` set), Radulf
+aborts it and merges again; if the worker had already committed the merge but
+died before recording it, Radulf recognises the branch is already in the base
+and records the existing merge commit (`alreadyMerged: true` in the activity's
+`review.decided` payload) instead of merging twice.
+
+**`a merge started outside Radulf is in progress in <repo path> (MERGE_HEAD …)`**
+The parent checkout has an in-progress merge whose `MERGE_HEAD` is *not* this
+card's run branch, so Radulf will not touch it. Finish or abort that merge
+yourself (`git merge --continue` / `git merge --abort` in the repo), then press
+Retry merge.
 
 This is worth watching during an
 [Improvement Run](IMPROVEMENT_RUNS.md#gotchas): nothing validates the tree when
