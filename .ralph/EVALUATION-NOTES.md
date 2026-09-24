@@ -1,0 +1,11 @@
+- 19:22 read .ralph/DONE and diff (3 files: orchestrator.ts, shutdown.ts, orchestrator.lifecycle.test.ts; 144+/9-), no unrelated changes
+- 19:22 all 7 grep acceptance criteria: PASS
+- 19:23 vitest lifecycle -t "graceful shutdown": exit 0, 4 passed (1 pre-existing + 3 new) — PASS
+- 19:23 npx tsc --noEmit: exit 0 — PASS
+- 19:23 npx eslint orchestrator.ts shutdown.ts lifecycle.test.ts: exit 0 — PASS
+- 19:23 vitest 4-file set (lifecycle, reaper, reviewService, boot): exit 0, 143 passed — PASS
+- 19:23 make check: exit 0 per gate (not re-run)
+- 19:23 code review: pump() draining guard pre-exists (test c pins it); RUNNING_STATUSES excludes reviewing so test (a)/(b) exercise the new branch; no other refs to old log strings
+- 19:24 VERDICT: approve written to .ralph/EVALUATION.md; SUMMARY.md written
+- 19:24 doc reconcile: specs/25 §11 SIGTERM sentence + docs/DOCKER.md stop sentence to name claimed deliveries as drained work
+- 19:25 doc edits done (specs/25, docs/DOCKER.md); git status shows only .ralph/ + those two docs
