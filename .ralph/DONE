@@ -1,5 +1,5 @@
-Removed dead `DIRTY_CHECKOUT_ERROR` export and inlined the dirty-checkout error in `mergeBranch`
-- Deleted the unused exported constant and its JSDoc from `src/server/git.ts`; `mergeBranch`'s JSDoc now directly precedes the function.
-- The `if (dirty)` branch now returns `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`, with the path interpolated inline.
-- Why: the constant had no consumers (reviewer fix-up on the half-finished-approval-merge recovery card); inlining keeps the message actionable without a dead export.
-- Checks: `vitest run src/server/git.test.ts` (33 passed), `tsc --noEmit`, `eslint src/server/git.ts` all exit 0; only `src/server/git.ts` changed.
+Removed dead DIRTY_CHECKOUT_ERROR export and inlined the actionable dirty-checkout message in mergeBranch
+- src/server/git.ts: `DIRTY_CHECKOUT_ERROR` constant deleted; `mergeBranch` now returns `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge` inline, so the bare literal no longer appears in the file.
+- Why: the exported constant had no consumers and the reviewer asked for the repo path to be interpolated directly into the operator-facing message.
+- Tests/docs untouched; "names the dirty checkout and tells the operator how to recover" in src/server/git.test.ts passes unchanged.
+- Task #2's grep checks (expecting the constant and bare literal to still exist) contradict the card's goal and were flagged as wrong rather than "fixed" by reintroducing dead code.
