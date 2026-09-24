@@ -269,7 +269,11 @@ confirm an override took.
 
 Stopping a worker waits up to 45 seconds so an in-flight run, or a review
 delivery it has claimed, can drain — the same shutdown path a `SIGTERM` takes
-on a host.
+on a host. If the window elapses with work still active, the worker hands it
+back before exiting: it interrupts its own runs (a checkpointed loop goes
+straight back to Ready), fails its own running delivery, frees its repo lease
+and deletes its `workers` row, so a replacement worker picks the card up on its
+first pump rather than after `workerStaleSeconds`.
 
 Migrations run forward at boot and are not reversed by a rollback. Take a
 backup before updating. The database is in WAL mode, so copy it through

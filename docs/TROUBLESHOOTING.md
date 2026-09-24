@@ -146,6 +146,15 @@ disk-limits section.
 Radulf was restarted while the run was in flight. The run is marked interrupted
 and the card returns to Needs Attention; restart it.
 
+**`worker shut down before this stage finished`**
+The worker was stopped (`SIGTERM`, `docker compose restart worker`, Restart in
+the app) and its drain window elapsed with this run still active. Before
+exiting, the worker interrupted the run itself and handed the card back: a
+checkpointed loop returns to Ready and the next worker resumes it from the
+first unchecked task; a plan or evaluate run parks the card in Needs
+Attention — restart it. Nothing waits for `workerStaleSeconds` here; that
+window only applies when a worker dies without draining.
+
 ## Approving a merge
 
 The merge is the one moment Radulf writes to your checkout, so it checks
@@ -157,7 +166,9 @@ press Retry merge (`POST /api/cards/:id/retry-merge`).
 
 **`worker <id> stopped heartbeating during delivery — press Retry merge; …`**
 The worker running the merge died partway through and the stale reaper parked
-the card. Press Retry merge: if the worker left its own `--no-commit` merge of
+the card (the same message appears when a worker was stopped and its drain
+window elapsed with the delivery still running — it fails its own delivery
+before exiting). Press Retry merge: if the worker left its own `--no-commit` merge of
 the run branch half-finished in the parent checkout (`MERGE_HEAD` set), Radulf
 aborts it and merges again; if the worker had already committed the merge but
 died before recording it, Radulf recognises the branch is already in the base
