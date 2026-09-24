@@ -1,5 +1,0 @@
-mergeBranch recovers half-finished approval merges in the shared parent checkout and gives actionable errors
-- Detects a stale MERGE_HEAD before merging: aborts Radulf's own abandoned merge of the same branch, reports an already-landed branch as `alreadyMerged` (with the actual merge commit), and refuses a foreign in-progress merge by naming its MERGE_HEAD sha and how to finish/abort it.
-- Dirty-checkout error now starts with the exported `DIRTY_CHECKOUT_ERROR` constant ("target checkout has uncommitted changes"), names the checkout path, and tells the operator to commit/stash then press Retry merge.
-- Stale-delivery reaper's Needs Attention reason explains what was interrupted and that Retry merge is safe.
-- Key files: src/server/git.ts, src/server/git.test.ts, and the delivery/reaper code that consumes mergeBranch's result.
