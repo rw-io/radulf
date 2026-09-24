@@ -1,0 +1,16 @@
+# Evaluation notes (attempt started 2026-09-24T20:19:59Z)
+- grep 'export async function findOpenPullRequest' src/server/github.ts → PASS
+- grep '"url,isDraft"' and '"--state"' in src/server/github.ts → PASS both
+- grep findOpenPullRequest / 'alreadyOpen: true' in src/server/reviewService.ts → PASS both
+- grep 'findOpenPullRequest: mocks.findOpenPullRequest' src/server/reviewService.pr.test.ts → PASS
+- grep findOpenPullRequest in github.test.ts → PASS; grep -c 'it(' → 7 (>=7 required) PASS
+- git diff --stat HEAD -- . ':!.ralph' → empty (committed); vs base branch → exactly the 4 permitted files, PASS
+- npx vitest run src/server/github.test.ts → 7 passed, exit 0
+- npx vitest run src/server/reviewService.pr.test.ts → 13 passed, exit 0
+- npx vitest run src/server/reviewService.test.ts → 15 passed, exit 0
+- npx tsc --noEmit → exit 0
+- npx eslint (4 files) → exit 0, 1 warning: reviewService.pr.test.ts:422 'run' assigned but never used (test 8c) — not an error
+- Repository gate make check (test+lint+typecheck+build+check-split) → exit 0 per .ralph/GATE.md
+- Code review: findOpenPullRequest via existing run helper (extended additively with stdout); deliverPullRequest adopts on ok&&pr, falls through on ok:false / pr:null; post-lookup code byte-identical; retryMerge routes through same path (test 8c)
+- VERDICT written: approve (.ralph/EVALUATION.md); .ralph/SUMMARY.md written
+- Doc reconciliation on approve: docs/TROUBLESHOOTING.md — one sentence added to the "stopped heartbeating during delivery" entry describing the PR-path alreadyOpen retry

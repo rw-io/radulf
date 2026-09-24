@@ -173,7 +173,12 @@ the run branch half-finished in the parent checkout (`MERGE_HEAD` set), Radulf
 aborts it and merges again; if the worker had already committed the merge but
 died before recording it, Radulf recognises the branch is already in the base
 and records the existing merge commit (`alreadyMerged: true` in the activity's
-`review.decided` payload) instead of merging twice.
+`review.decided` payload) instead of merging twice. The pull-request delivery
+has the same idempotent retry: if the earlier attempt's `gh pr create` already
+succeeded, Retry merge finds the open PR for the branch and adopts it
+(`alreadyOpen: true` plus its `prUrl` in the payload) instead of running
+`gh pr create` again, which would fail with "a pull request for branch … already
+exists".
 
 **`a merge started outside Radulf is in progress in <repo path> (MERGE_HEAD …)`**
 The parent checkout has an in-progress merge whose `MERGE_HEAD` is *not* this
