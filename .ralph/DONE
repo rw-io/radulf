@@ -1,0 +1,5 @@
+mergeBranch recovers half-finished approval merges left by dead delivery workers; dirty-checkout and reaper messages are actionable
+- src/server/git.ts: mergeBranch detects an in-progress merge in the shared checkout — aborts Radulf's own abandoned merge, reports an already-landed one as `alreadyMerged`, and refuses a foreign in-progress merge by name; dirty-checkout error tells the operator what to do.
+- src/server/orchestrator.ts: reapStaleRuns now builds the Needs Attention reason for a dead worker's running delivery as "…stopped heartbeating during delivery — press Retry merge; Radulf will abort the half-finished merge it left in <repo.path>, or record it if it already landed", flowing the same string into the reviewDeliveries row, the card.moved reason, and the review.decided `deliveryFailed` payload.
+- src/server/orchestrator.reaper.test.ts: dead-worker test asserts the actionable error text, repo path, the parked card's card.moved reason, and the newest review.decided deliveryFailed.
+- Verified: node_modules/.bin/vitest run src/server/orchestrator.reaper.test.ts -t "dead worker" (2 passed).
