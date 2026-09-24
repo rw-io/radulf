@@ -23,7 +23,7 @@ import {
   removeWorktree,
   stripRalphForDelivery,
 } from "./git";
-import { createPullRequest, githubStatus, invalidateGithubStatus } from "./github";
+import { createPullRequest, findOpenPullRequest, githubStatus, invalidateGithubStatus } from "./github";
 import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
@@ -642,6 +642,29 @@ export class ReviewService {
 
     const pushed = await pushBranch(run.worktreePath, run.branch);
     if (!pushed.ok) return failed(`git push failed: ${pushed.error}`);
+
+    // An earlier attempt may have died after `gh pr create` succeeded — the
+    // card sits in needs_attention while a live PR already waits on GitHub.
+    // Adopt that PR instead of re-running `gh pr create`, which would fail with
+    // "a pull request for branch ... already exists" and leave the card stuck.
+    // When the lookup itself fails (`existing.ok === false`) there is no
+    // evidence either way, so fall through to `createPullRequest` exactly as
+    // before — never toward a merge.
+    const existing = await findOpenPullRequest({
+      worktreePath: run.worktreePath,
+      baseBranch,
+      branch: run.branch,
+    });
+    if (existing.ok && existing.pr) {
+      await this.completeApproval(card, run, repo, {
+        delivery: "pr",
+        grantedBy: card.openPr ? "card" : "global",
+        draft: existing.pr.isDraft,
+        prUrl: existing.pr.url,
+        alreadyOpen: true,
+      });
+      return { ok: true };
+    }
 
     // Draft turns on who released THIS diff, not on the card's flags, so that
     // "a non-draft PR from Radulf was seen by a human" holds by construction.

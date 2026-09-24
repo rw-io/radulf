@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   stripRalphForDelivery: vi.fn(),
   githubStatus: vi.fn(),
   createPullRequest: vi.fn(),
+  findOpenPullRequest: vi.fn(),
   invalidateGithubStatus: vi.fn(),
   settings: { openPr: false, autoApprove: false },
 }));
@@ -34,6 +35,7 @@ vi.mock("./git", async (importOriginal) => ({
 vi.mock("./github", () => ({
   githubStatus: mocks.githubStatus,
   createPullRequest: mocks.createPullRequest,
+  findOpenPullRequest: mocks.findOpenPullRequest,
   invalidateGithubStatus: mocks.invalidateGithubStatus,
 }));
 vi.mock("./settings", () => ({ getSettings: () => mocks.settings }));
@@ -152,6 +154,7 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
       ok: true,
       url: "https://github.com/o/r/pull/7",
     });
+    mocks.findOpenPullRequest.mockResolvedValue({ ok: true, pr: null });
     seedRepo();
   });
 
@@ -360,5 +363,83 @@ describe("ReviewService — spec 15 pull-request delivery", () => {
       expect(deps.moveCard).toHaveBeenLastCalledWith(id, "reviewing", "review", expect.any(String));
       expect(mocks.pushBranch).not.toHaveBeenCalled();
     }
+  });
+
+  it("8 — a retried delivery adopts the PR an earlier attempt already opened", async () => {
+    seedCard("card-existing", 1);
+    const run = seedRun("card-existing");
+    mocks.findOpenPullRequest.mockResolvedValue({
+      ok: true,
+      pr: { url: "https://github.com/o/r/pull/42", isDraft: true },
+    });
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).approve(run.id, "human");
+
+    expect(result.ok).toBe(true);
+    // The whole point: no second `gh pr create`, which would fail with "a pull
+    // request for branch ... already exists".
+    expect(mocks.createPullRequest).not.toHaveBeenCalled();
+    expect(mocks.findOpenPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: run.worktreePath,
+        baseBranch: "main",
+        branch: "ralph/loop-card-existing",
+      }),
+    );
+    expect(deps.moveCard).toHaveBeenLastCalledWith("card-existing", "reviewing", "done");
+    expect(db.select().from(reviews).all()).toHaveLength(1);
+    expect(db.select().from(reviews).all()[0]!.decision).toBe("approved");
+    expect(decision("card-existing")).toMatchObject({
+      delivery: "pr",
+      prUrl: "https://github.com/o/r/pull/42",
+      alreadyOpen: true,
+      draft: true,
+    });
+  });
+
+  it("8b — a failed lookup still opens a PR and never merges", async () => {
+    seedCard("card-lookup-fail", 1);
+    const run = seedRun("card-lookup-fail");
+    mocks.findOpenPullRequest.mockResolvedValue({ ok: false, error: "gh pr list failed" });
+
+    const result = await new ReviewService(makeDeps()).approve(run.id);
+
+    expect(result.ok).toBe(true);
+    // An inconclusive lookup is not "no PR": delivery proceeds as it always
+    // did, and a PR is opened rather than the diff being merged locally.
+    expect(mocks.createPullRequest).toHaveBeenCalledTimes(1);
+    expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    expect(decision("card-lookup-fail")).toMatchObject({
+      delivery: "pr",
+      prUrl: "https://github.com/o/r/pull/7",
+    });
+    expect(decision("card-lookup-fail")).not.toHaveProperty("alreadyOpen");
+  });
+
+  it("8c — Retry merge from needs_attention lands a card whose PR already exists in done", async () => {
+    seedCard("card-retry", 1);
+    const run = seedRun("card-retry");
+    db.update(cards)
+      .set({ status: "needs_attention" })
+      .where(eq(cards.id, "card-retry"))
+      .run();
+    mocks.findOpenPullRequest.mockResolvedValue({
+      ok: true,
+      pr: { url: "https://github.com/o/r/pull/9", isDraft: false },
+    });
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).retryMerge("card-retry");
+
+    expect(result.ok).toBe(true);
+    expect(mocks.createPullRequest).not.toHaveBeenCalled();
+    expect(deps.moveCard).toHaveBeenLastCalledWith("card-retry", "reviewing", "done");
+    expect(decision("card-retry")).toMatchObject({
+      delivery: "pr",
+      prUrl: "https://github.com/o/r/pull/9",
+      alreadyOpen: true,
+      draft: false,
+    });
   });
 });
