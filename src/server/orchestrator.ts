@@ -585,24 +585,7 @@ export class Orchestrator {
       const exitReason = run.workerId
         ? `worker ${run.workerId} stopped heartbeating`
         : "server restarted mid-run";
-      const result = db
-        .update(runs)
-        .set({ status: "interrupted", exitReason, endedAt: now() })
-        .where(and(eq(runs.id, run.id), eq(runs.status, "running")))
-        .run();
-      if (result.changes !== 1) continue;
-      // Only the iterations still open: finished ones keep their verdicts.
-      db.update(iterations)
-        .set({ status: "failed", summary: "interrupted by worker loss", endedAt: now() })
-        .where(and(eq(iterations.runId, run.id), eq(iterations.status, "running")))
-        .run();
-      emitEvent("run.finished", {
-        cardId: run.cardId,
-        runId: run.id,
-        payload: { status: "interrupted", exitReason },
-      });
-      const card = getCard(run.cardId);
-      if (card) this.parkOrResume(card);
+      this.interruptRun(run, exitReason);
     }
 
     // Spec 25 decision 6: a delivery whose claiming worker died mid-merge.
@@ -616,20 +599,7 @@ export class Orchestrator {
       .all();
     for (const delivery of runningDeliveries) {
       if (delivery.workerId !== null && live.has(delivery.workerId)) continue;
-      const repo = getRepo(delivery.repoId);
-      const error = `worker ${delivery.workerId} stopped heartbeating during delivery — press Retry merge; Radulf will abort the half-finished merge it left in ${repo?.path ?? "the repo checkout"}, or record it if it already landed`;
-      const result = db
-        .update(reviewDeliveries)
-        .set({ status: "finished", ok: 0, error, endedAt: now() })
-        .where(and(eq(reviewDeliveries.id, delivery.id), eq(reviewDeliveries.status, "running")))
-        .run();
-      if (result.changes !== 1) continue;
-      this.moveCard(delivery.cardId, "reviewing", "needs_attention", error);
-      emitEvent("review.decided", {
-        cardId: delivery.cardId,
-        runId: delivery.runId,
-        payload: { decision: "approved", deliveryFailed: error },
-      });
+      this.failDelivery(delivery);
     }
     releaseStaleLeases(live);
     // The ref audit log only has to outlive the integrity checks that consult
@@ -685,6 +655,52 @@ export class Orchestrator {
     for (const id of staleWorkerIds(staleSeconds)) {
       if (id !== this.workerId) deleteWorker(id);
     }
+  }
+
+  /** Interrupt one owned run: shared by the stale reaper and by shutdown.
+   * Returns false when the CAS lost (another reaper, or the run's own worker,
+   * finished the row first) and nothing else was written. */
+  private interruptRun(run: Run, exitReason: string): boolean {
+    const result = db
+      .update(runs)
+      .set({ status: "interrupted", exitReason, endedAt: now() })
+      .where(and(eq(runs.id, run.id), eq(runs.status, "running")))
+      .run();
+    if (result.changes !== 1) return false;
+    // Only the iterations still open: finished ones keep their verdicts.
+    db.update(iterations)
+      .set({ status: "failed", summary: "interrupted by worker loss", endedAt: now() })
+      .where(and(eq(iterations.runId, run.id), eq(iterations.status, "running")))
+      .run();
+    emitEvent("run.finished", {
+      cardId: run.cardId,
+      runId: run.id,
+      payload: { status: "interrupted", exitReason },
+    });
+    this.controllers.get(run.id)?.abort();
+    const card = getCard(run.cardId);
+    if (card) this.parkOrResume(card);
+    return true;
+  }
+
+  /** Fail one owned review delivery: shared by the stale reaper and by
+   * shutdown. Returns false when the CAS lost and nothing else was written. */
+  private failDelivery(delivery: typeof reviewDeliveries.$inferSelect): boolean {
+    const repo = getRepo(delivery.repoId);
+    const error = `worker ${delivery.workerId} stopped heartbeating during delivery — press Retry merge; Radulf will abort the half-finished merge it left in ${repo?.path ?? "the repo checkout"}, or record it if it already landed`;
+    const result = db
+      .update(reviewDeliveries)
+      .set({ status: "finished", ok: 0, error, endedAt: now() })
+      .where(and(eq(reviewDeliveries.id, delivery.id), eq(reviewDeliveries.status, "running")))
+      .run();
+    if (result.changes !== 1) return false;
+    this.moveCard(delivery.cardId, "reviewing", "needs_attention", error);
+    emitEvent("review.decided", {
+      cardId: delivery.cardId,
+      runId: delivery.runId,
+      payload: { decision: "approved", deliveryFailed: error },
+    });
+    return true;
   }
 
   /** A loop is checkpointed: the orchestrator commits every finished
