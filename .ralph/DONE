@@ -1,5 +1,5 @@
-mergeBranch recovers half-finished approval merges left by dead delivery workers; dirty-checkout and reaper messages are actionable
-- src/server/git.ts: mergeBranch detects an in-progress merge in the shared checkout — aborts Radulf's own abandoned merge, reports an already-landed one as `alreadyMerged`, and refuses a foreign in-progress merge by name; dirty-checkout error tells the operator what to do.
-- src/server/orchestrator.ts: reapStaleRuns now builds the Needs Attention reason for a dead worker's running delivery as "…stopped heartbeating during delivery — press Retry merge; Radulf will abort the half-finished merge it left in <repo.path>, or record it if it already landed", flowing the same string into the reviewDeliveries row, the card.moved reason, and the review.decided `deliveryFailed` payload.
-- src/server/orchestrator.reaper.test.ts: dead-worker test asserts the actionable error text, repo path, the parked card's card.moved reason, and the newest review.decided deliveryFailed.
-- Verified: node_modules/.bin/vitest run src/server/orchestrator.reaper.test.ts -t "dead worker" (2 passed).
+mergeBranch recovers half-finished approval merges in the shared parent checkout and gives actionable errors
+- Detects a stale MERGE_HEAD before merging: aborts Radulf's own abandoned merge of the same branch, reports an already-landed branch as `alreadyMerged` (with the actual merge commit), and refuses a foreign in-progress merge by naming its MERGE_HEAD sha and how to finish/abort it.
+- Dirty-checkout error now starts with the exported `DIRTY_CHECKOUT_ERROR` constant ("target checkout has uncommitted changes"), names the checkout path, and tells the operator to commit/stash then press Retry merge.
+- Stale-delivery reaper's Needs Attention reason explains what was interrupted and that Retry merge is safe.
+- Key files: src/server/git.ts, src/server/git.test.ts, and the delivery/reaper code that consumes mergeBranch's result.
