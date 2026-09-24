@@ -559,7 +559,13 @@ export class ReviewService {
       return { ok: false, error: result.error };
     }
 
-    await this.completeApproval(card, run, repo, { mergeCommit: result.mergeCommit }, result.mergeCommit);
+    await this.completeApproval(
+      card,
+      run,
+      repo,
+      { mergeCommit: result.mergeCommit, ...(result.alreadyMerged ? { alreadyMerged: true } : {}) },
+      result.mergeCommit,
+    );
     return { ok: true };
   }
 

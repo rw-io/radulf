@@ -616,7 +616,8 @@ export class Orchestrator {
       .all();
     for (const delivery of runningDeliveries) {
       if (delivery.workerId !== null && live.has(delivery.workerId)) continue;
-      const error = `worker ${delivery.workerId} stopped heartbeating during delivery`;
+      const repo = getRepo(delivery.repoId);
+      const error = `worker ${delivery.workerId} stopped heartbeating during delivery — press Retry merge; Radulf will abort the half-finished merge it left in ${repo?.path ?? "the repo checkout"}, or record it if it already landed`;
       const result = db
         .update(reviewDeliveries)
         .set({ status: "finished", ok: 0, error, endedAt: now() })

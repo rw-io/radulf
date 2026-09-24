@@ -339,7 +339,13 @@ export async function mergeBranch(
   branch: string,
   message: string,
   onCommitted?: (mergeCommit: string) => void
-): Promise<{ ok: boolean; mergeCommit?: string; error?: string; conflict?: boolean }> {
+): Promise<{
+  ok: boolean;
+  mergeCommit?: string;
+  error?: string;
+  conflict?: boolean;
+  alreadyMerged?: boolean;
+}> {
   const original = await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD");
   const restore = async () => {
     // A detached HEAD ("HEAD") has no branch to restore.
@@ -347,6 +353,45 @@ export async function mergeBranch(
       await tryGit(repoPath, "checkout", original);
     }
   };
+  // A delivery worker can die between `merge --no-commit` and `commit` below,
+  // leaving the shared parent checkout with MERGE_HEAD set. The next attempt
+  // must not run `checkout`/`status` on top of that half-finished merge. If
+  // MERGE_HEAD is this very run branch, it is Radulf's own abandoned merge —
+  // abort it and start over. Anything else is someone else's merge, which we
+  // refuse to touch.
+  const inProgress = await tryGit(repoPath, "rev-parse", "-q", "--verify", "MERGE_HEAD");
+  if (inProgress.ok) {
+    const sha = inProgress.out.trim();
+    const branchSha = (await tryGit(repoPath, "rev-parse", branch)).out.trim();
+    if (sha === branchSha) {
+      await tryGit(repoPath, "merge", "--abort");
+    } else {
+      return {
+        ok: false,
+        error: `a merge started outside Radulf is in progress in ${repoPath} (MERGE_HEAD ${sha}) — finish or abort it there (git merge --continue / git merge --abort) before retrying`,
+      };
+    }
+  }
+  // The run branch is already contained in base: the dead worker committed the
+  // merge but died before the DB write recorded it. Nothing to merge and no ref
+  // moves now, so `onCommitted` is deliberately not fired and no checkout
+  // happens. Report the merge commit that landed it (the oldest merge commit on
+  // the ancestry path from the branch to base), falling back to the base tip.
+  if ((await tryGit(repoPath, "merge-base", "--is-ancestor", branch, baseBranch)).ok) {
+    const merges = await tryGit(
+      repoPath,
+      "rev-list",
+      "--reverse",
+      "--ancestry-path",
+      "--merges",
+      `${branch}..${baseBranch}`
+    );
+    const mergeCommit =
+      merges.ok && merges.out.trim()
+        ? merges.out.trim().split("\n")[0]
+        : await git(repoPath, "rev-parse", baseBranch);
+    return { ok: true, mergeCommit, alreadyMerged: true };
+  }
   if (original !== baseBranch) {
     const co = await tryGit(repoPath, "checkout", baseBranch);
     if (!co.ok) return { ok: false, error: `cannot checkout ${baseBranch}: ${co.out}` };
@@ -354,7 +399,10 @@ export async function mergeBranch(
   const dirty = await git(repoPath, "status", "--porcelain");
   if (dirty) {
     await restore();
-    return { ok: false, error: "target checkout has uncommitted changes" };
+    return {
+      ok: false,
+      error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
+    };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before
   // committing — the reviewed diff excludes it, so the merge must too.
