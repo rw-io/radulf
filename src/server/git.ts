@@ -333,11 +333,6 @@ async function removeRalphDir(cwd: string): Promise<{ ok: boolean; out: string }
  * `onCommitted`, if given, fires the instant the merge commit's oid is known
  * — see the comment at the call site for why it exists and what it does not
  * cover. */
-/** Leading phrase of the error `mergeBranch` returns when the shared parent
- * checkout has uncommitted changes. Kept as a constant so the UI/tests can
- * match it without depending on the path and remediation hint that follow. */
-export const DIRTY_CHECKOUT_ERROR = "target checkout has uncommitted changes";
-
 export async function mergeBranch(
   repoPath: string,
   baseBranch: string,
@@ -406,7 +401,7 @@ export async function mergeBranch(
     await restore();
     return {
       ok: false,
-      error: `${DIRTY_CHECKOUT_ERROR} in ${repoPath} — commit or stash them there, then press Retry merge`,
+      error: `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`,
     };
   }
   // --no-commit so .ralph/ (plan artifacts, loop memory) can be dropped before

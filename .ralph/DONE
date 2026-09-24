@@ -1,0 +1,5 @@
+Removed dead `DIRTY_CHECKOUT_ERROR` export and inlined the dirty-checkout error in `mergeBranch`
+- Deleted the unused exported constant and its JSDoc from `src/server/git.ts`; `mergeBranch`'s JSDoc now directly precedes the function.
+- The `if (dirty)` branch now returns `target checkout ${repoPath} has uncommitted changes — commit or stash them there, then press Retry merge`, with the path interpolated inline.
+- Why: the constant had no consumers (reviewer fix-up on the half-finished-approval-merge recovery card); inlining keeps the message actionable without a dead export.
+- Checks: `vitest run src/server/git.test.ts` (33 passed), `tsc --noEmit`, `eslint src/server/git.ts` all exit 0; only `src/server/git.ts` changed.
