@@ -410,7 +410,12 @@ export default function SettingsPage() {
                   <SectionHeading title="Jira">
                     Paste an issue link or key into the New task dialog to prefill a card from
                     Jira. Read-only: Radulf fetches the issue and never writes to Jira. The token
-                    is an Atlassian API token for the account whose email is given.
+                    is an Atlassian API token for the account whose email is given, created at{" "}
+                    <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noreferrer" className="text-accent underline">
+                      id.atlassian.com
+                    </a>
+                    , with or without scopes: Radulf reaches the site through Atlassian&apos;s
+                    api.atlassian.com gateway, which accepts both kinds.
                   </SectionHeading>
                   <div className="grid gap-4 sm:grid-cols-2">
                     {textInput("jiraBaseUrl", { label: "Jira base URL", placeholder: "https://your-site.atlassian.net" })}
