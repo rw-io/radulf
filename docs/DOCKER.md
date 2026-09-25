@@ -148,9 +148,16 @@ docker compose exec -it worker gh auth setup-git
 ```
 
 Both persist in `home/` on the volume, which both services mount, so a login
-done in either container is seen by both. For SSH URLs, put a key under
-`home/.ssh` on the volume instead. A clone that would prompt for a credential
-fails in seconds with git's message rather than hanging.
+done in either container is seen by both. For SSH URLs (`git@host:…` or
+`ssh://`), the container needs a private key the git host knows and that
+host's entry in `known_hosts`, both under `home/.ssh`. The narrowest way in
+is to bind-mount just those two files from the host, read-only, in a per-host
+override for both services, see [Per-host overrides](#per-host-overrides); a
+deploy key made for Radulf is better than a personal one. Git runs `ssh` in
+batch mode, so a host missing from `known_hosts` fails with `Host key
+verification failed` rather than prompting: connect to it from the host once
+first. A clone that would prompt for a credential likewise fails in seconds
+with git's message rather than hanging.
 
 Checkouts that already live on the host can still be mounted: set
 `RADULF_REPOS_DIR` in `.env` to the directory holding them, and they appear at
@@ -222,7 +229,7 @@ because its environment is an allowlist:
 
 `compose.yaml` is the checked-in shape of the service. Anything specific to
 one host goes in `compose.override.yaml` beside it, which compose loads on its
-own and git ignores. Three overrides come up:
+own and git ignores. Four overrides come up:
 
 Overrides are per service: the same block under `worker:` applies to the
 worker containers, and DNS or `user:` usually belong on both.
@@ -244,11 +251,21 @@ services:
     # apply inside it. Size for one worker plus the runs it drives.
     mem_limit: 12g
     pids_limit: 4096
+    # SSH clone URLs: the one key the git host knows and the host's
+    # known_hosts, read-only. Create home/.ssh on the volume first
+    # (`docker compose exec worker mkdir -p -m 700 /var/lib/radulf/home/.ssh`)
+    # so Docker does not create it root-owned. Agent bash never sees $HOME.
+    volumes:
+      - ~/.ssh/id_ed25519:/var/lib/radulf/home/.ssh/id_ed25519:ro
+      - ~/.ssh/known_hosts:/var/lib/radulf/home/.ssh/known_hosts:ro
   web:
     dns:
       - 100.100.100.100
       - 192.168.1.1
     user: "1001:1001"
+    volumes:
+      - ~/.ssh/id_ed25519:/var/lib/radulf/home/.ssh/id_ed25519:ro
+      - ~/.ssh/known_hosts:/var/lib/radulf/home/.ssh/known_hosts:ro
 ```
 
 `docker compose config` prints the merged result, which is the quickest way to

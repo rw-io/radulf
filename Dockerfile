@@ -37,6 +37,8 @@ FROM ${NODE_IMAGE} AS runtime
 #   make                      repos whose agent runs drive `make` (this one included)
 #   sqlite3                   `VACUUM INTO` backups, as the Makefile's db-backup does
 #   curl ca-certificates      the healthcheck below, and TLS trust for provider calls
+#   openssh-client            git over ssh:// and git@host: URLs (docs/DOCKER.md); git
+#                             alone has no ssh, and the clone fails with "ssh: not found"
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -44,7 +46,7 @@ RUN apt-get update \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends git gh bubblewrap socat ripgrep procps make sqlite3 \
+ && apt-get install -y --no-install-recommends git gh openssh-client bubblewrap socat ripgrep procps make sqlite3 \
  && rm -rf /var/lib/apt/lists/*
 
 # Host-side commits (merges, plan syncs) run with the container's git config.
@@ -69,8 +71,13 @@ ENV NODE_ENV=production \
     NEXT_MANUAL_SIG_HANDLE=1 \
     RADULF_DATA_DIR=/var/lib/radulf/data \
     HOME=/var/lib/radulf/home
+# The passwd entry has to agree with HOME: OpenSSH resolves `~/.ssh` from
+# getpwuid, not $HOME, so with the base image's /home/node it would look for
+# known_hosts and keys beside nothing and every SSH clone would fail with
+# "Host key verification failed" however the volume was populated.
 RUN mkdir -p /var/lib/radulf/data /var/lib/radulf/home \
- && chown -R node:node /var/lib/radulf
+ && chown -R node:node /var/lib/radulf \
+ && usermod -d /var/lib/radulf/home node
 VOLUME /var/lib/radulf
 
 WORKDIR /app
