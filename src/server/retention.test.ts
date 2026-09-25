@@ -123,4 +123,33 @@ describe("removeFinishedWorktrees", () => {
     // Idempotent: the finished card is already fully reclaimed.
     expect(await removeFinishedWorktrees()).toBe(0);
   });
+
+  it("a baseline that cannot be deleted leaves the worktree, branch and row for a retry", async () => {
+    const repoPath = initScratchRepo("ralph-baseline-stuck-repo-");
+    db.insert(repos).values({ id: "repo-1", name: "repo", path: repoPath, defaultBranch: "main", createdAt: now() }).run();
+    const stuck = seed("card-stuck", "done", repoPath);
+
+    // `removeBaseline` is `rmSync(path, { force: true })` without `recursive`,
+    // so a non-empty DIRECTORY at the baseline path makes the deletion throw
+    // (force only swallows ENOENT). Stands in for any failure of that step.
+    fs.rmSync(stuck.baselinePath);
+    fs.mkdirSync(stuck.baselinePath);
+    fs.writeFileSync(path.join(stuck.baselinePath, "child"), "");
+
+    await expect(removeFinishedWorktrees()).rejects.toThrow();
+
+    // The baseline step runs FIRST, before the worktree is removed and before
+    // `removeWorktree` stamps `removedAt` — so the throw left everything intact
+    // and the row still selected (`removedAt IS NULL`) by the next tick.
+    expect(fs.existsSync(stuck.worktreePath)).toBe(true);
+    expect(git(repoPath, "branch", "--list", stuck.branch)).toContain(stuck.branch);
+    expect(db.select().from(worktrees).all().find((r) => r.id === "wt-card-stuck")?.removedAt).toBeNull();
+
+    // Repair the baseline path and the same sweep finishes the job.
+    fs.rmSync(stuck.baselinePath, { recursive: true, force: true });
+    expect(await removeFinishedWorktrees()).toBe(1);
+    expect(fs.existsSync(stuck.worktreePath)).toBe(false);
+    expect(git(repoPath, "branch", "--list", stuck.branch)).toBe("");
+    expect(db.select().from(worktrees).all().find((r) => r.id === "wt-card-stuck")?.removedAt).not.toBeNull();
+  });
 });
