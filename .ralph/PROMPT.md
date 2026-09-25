@@ -1,4 +1,4 @@
-You are working on: making the stale delivery reaper in src/server/orchestrator.ts finish a dead worker's review delivery as landed (ok=1, `recoveredAfterWorkerLoss`) when its card is already `done`, and renaming/widening `removeAbandonedWorktrees` in src/server/retention.ts to `removeFinishedWorktrees` so it reclaims the worktree, `ralph/*` branch and integrity baseline of every `done`/`abandoned` card.
+You are working on: finishing a dead delivery worker's `review_deliveries` row as landed when its card is already `done` (Orchestrator.reapStaleRuns), and reclaiming the worktree, `ralph/*` branch, `worktrees` row and integrity baseline that finished (`done`/`abandoned`) cards leave behind (retention.ts `removeFinishedWorktrees`).
 
 Your task for this iteration is given in the `## Your assigned task` block at
 the top of this prompt, together with a LAST_TASK=true|false flag. That block
@@ -36,9 +36,8 @@ them sequentially.
 Do not re-read a file after editing it unless a check fails or the edit tool
 reports ambiguity.
 
-Hints for this repository:
-- TypeScript + drizzle-orm on SQLite; tests are vitest (`npx vitest run <file>`). Tests use `await import(...)` after `setupTestDataDir(...)` — keep new imports in that same awaited-import style in test files.
-- `FINISHED_STATUSES` (src/server/epics.ts) is a `readonly CardStatus[]`; when passing it to drizzle's `inArray`, spread it: `inArray(cards.status, [...FINISHED_STATUSES])`.
-- `getCard` and `emitEvent` are already imported in src/server/orchestrator.ts; the `reviews` table is exported from `@/db` (src/db/schema.ts) but must be added to orchestrator.ts's `@/db` import list if you use it.
-- ESLint fails on unused imports; remove any import you stop using.
-- Do not touch files under `.ralph/` other than `.ralph/ITERATION_DONE` (and `.ralph/DONE` when LAST_TASK=true).
+Hints:
+- This is a TypeScript / Next.js / drizzle-orm (SQLite) repo. Tests are Vitest: run a single file with `npx vitest run <path>`. Test files use `setupTestDataDir(...)` at top level and then `await import("@/db")` — keep that ordering when adding imports.
+- Database tables (`cards`, `runs`, `reviews`, `reviewDeliveries`, `worktrees`, `repoLeases`, `events`, `DATA_DIR`) come from `@/db`; drizzle helpers (`and`, `eq`, `inArray`, `isNull`) from `drizzle-orm`.
+- Do NOT run `make check`, `make test`, or a bare `npx vitest run` — only the file(s) named in your task.
+- Do not weaken or delete existing tests; add new ones alongside them.
