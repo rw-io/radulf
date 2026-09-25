@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
@@ -245,8 +245,31 @@ describe("delivery reaper (spec 25 decision 6)", () => {
     expect(delivery("d1").status).toBe("finished");
     expect(delivery("d1").ok).toBe(0);
     expect(delivery("d1").error).toContain("dead");
+    expect(delivery("d1").error).toContain("press Retry merge");
+    expect(delivery("d1").error).toContain("/tmp/repo-1");
+    expect(delivery("d1").error).toContain("record it if it already landed");
     expect(lease("/tmp/repo-1")).toBeUndefined();
     expect(card("c1").status).toBe("needs_attention");
+
+    const moves = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, "c1"), eq(events.type, "card.moved")))
+      .all()
+      .map((e) => JSON.parse(e.payload) as { to: string; reason?: string });
+    const parked = moves.find((m) => m.to === "needs_attention");
+    expect(parked?.reason).toContain("press Retry merge");
+    expect(parked?.reason).toContain("/tmp/repo-1");
+
+    const decided = db
+      .select()
+      .from(events)
+      .where(and(eq(events.cardId, "c1"), eq(events.type, "review.decided")))
+      .all()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    expect(decided.length).toBeGreaterThan(0);
+    const newest = JSON.parse(decided[0].payload) as { deliveryFailed?: string };
+    expect(newest.deliveryFailed).toContain("press Retry merge");
   });
 
   it("leaves a running delivery owned by a live worker alone", () => {

@@ -63,7 +63,13 @@ the pieces that make that safe are:
   checkpointed loop goes back to Ready and the pump opens a fresh run on the
   first unchecked task, while every other kind of run parks the card in Needs
   Attention. It also parks cards whose claimed review delivery died mid-merge
-  and deletes the stale `workers` rows.
+  and deletes the stale `workers` rows. A worker that is stopped deliberately
+  does not wait for a peer to notice: `releaseOwnedWork()` (called from the
+  shutdown drain in `src/server/shutdown.ts` on both the clean and the
+  timed-out path) stops its own timers, runs the reaper's per-run and
+  per-delivery bodies over its own `running` rows with exit reason `worker
+  shut down before this stage finished`, releases its `repo_leases` rows and
+  deletes its own `workers` row before `process.exit`.
 - **The control column.** A web process holds no `AbortController` for a run
   another process owns, so cancel, reset and pause also write the nullable
   `runs.control` column (`cancel` | `pause`); the owning worker polls that
@@ -301,10 +307,17 @@ hooks therefore do not run on Radulf's merge commits; the reviewed diff is the
 gate. `offRunBranchReason` refuses to commit into a worktree that has left its
 run branch or whose `.git` pointer no longer leads to the repository.
 
-`mergeBranch` is the one write to the user's repo. It checks out the base
-branch, refuses a dirty tree, merges `--no-ff --no-commit` so `.ralph/` can be
-dropped before committing, and restores your original branch on every path
-including failure. It distinguishes a content conflict (`conflict: true`,
+`mergeBranch` is the one write to the user's repo. Before touching anything it
+looks for a merge already in progress in the parent checkout: if `MERGE_HEAD`
+is this run branch (a delivery worker died between `merge --no-commit` and
+`commit`) it runs `git merge --abort` and starts over; any other `MERGE_HEAD`
+is refused with an error naming the repo path. If the run branch is already an
+ancestor of the base (the worker committed but died before the DB write) it
+returns `alreadyMerged: true` with the existing merge commit and moves no ref.
+Otherwise it checks out the base branch, refuses a dirty tree (the error names
+the repo path and tells the operator to commit or stash and press Retry merge),
+merges `--no-ff --no-commit` so `.ralph/` can be dropped before committing, and
+restores your original branch on every path including failure. It distinguishes a content conflict (`conflict: true`,
 recoverable — the card goes back to the loop via `mergeBaseIntoWorktree`) from
 an unrecoverable failure. It carries no lock of its own: the caller holds the
 repo's `repo_leases` row (`src/server/repoLeases.ts`), which serializes merges

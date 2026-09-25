@@ -101,6 +101,8 @@ const {
   plans,
   repos,
   reviews,
+  reviewDeliveries,
+  repoLeases,
   runs,
   settings,
   worktrees,
@@ -281,6 +283,8 @@ describe("Orchestrator cancellation lifecycle", () => {
     db.delete(improvementRuns).run();
     db.delete(reviews).run();
     db.delete(iterations).run();
+    db.delete(reviewDeliveries).run();
+    db.delete(repoLeases).run();
     db.delete(runs).run();
     db.delete(plans).run();
     db.delete(events).run();
@@ -2127,6 +2131,121 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(mocks.runHarness).toHaveBeenCalledTimes(1);
       // Shutdown can now finish instead of burning its whole budget.
       await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
+    });
+
+    it("counts a review delivery this worker is running as in-flight work", () => {
+      card("drain-owned-delivery", "reviewing");
+      plan("drain-owned-delivery");
+      completedRun("drain-owned-delivery", "drain-owned-delivery-run");
+      const orchestrator = new Orchestrator({ autoStart: false });
+      // Card is `reviewing` and no run is running — nothing in flight yet.
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      db.insert(reviewDeliveries)
+        .values({
+          id: "drain-owned-delivery-1",
+          runId: "drain-owned-delivery-run",
+          cardId: "drain-owned-delivery",
+          repoId: "repo-1",
+          fromStatus: "review",
+          approvedBy: "human",
+          status: "running",
+          workerId: orchestrator.workerId,
+          createdAt: now(),
+          claimedAt: now(),
+        })
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(true);
+
+      // Another worker's running delivery is not ours to drain.
+      db.update(reviewDeliveries)
+        .set({ workerId: "some-other-worker" })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      // A finished delivery we owned no longer counts.
+      db.update(reviewDeliveries)
+        .set({ workerId: orchestrator.workerId, status: "finished" })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+
+      // A pending (unclaimed) delivery is not in flight on any worker.
+      db.update(reviewDeliveries)
+        .set({ status: "pending", workerId: null })
+        .where(eq(reviewDeliveries.id, "drain-owned-delivery-1"))
+        .run();
+      expect(orchestrator.hasInFlightWork()).toBe(false);
+    });
+
+    it("waits for a review delivery mid-merge to finish before reporting idle", async () => {
+      card("drain-delivery", "review");
+      plan("drain-delivery");
+      completedRun("drain-delivery", "drain-delivery-run");
+      const merge = deferred<{ ok: boolean; mergeCommit: string }>();
+      mocks.mergeBranch.mockReturnValueOnce(merge.promise);
+      const orchestrator = new Orchestrator({ autoStart: false });
+
+      const approval = orchestrator.approve("drain-delivery-run");
+      await vi.waitFor(() => expect(mocks.mergeBranch).toHaveBeenCalledTimes(1));
+      // SIGTERM lands while the merge is still running.
+      orchestrator.startDraining();
+
+      const delivery = () =>
+        db
+          .select()
+          .from(reviewDeliveries)
+          .where(eq(reviewDeliveries.runId, "drain-delivery-run"))
+          .get();
+      expect(getCard("drain-delivery").status).toBe("reviewing");
+      expect(delivery()).toMatchObject({ status: "running", workerId: orchestrator.workerId });
+      // The drain must not report idle while our claimed delivery is mid-merge.
+      expect(orchestrator.hasInFlightWork()).toBe(true);
+
+      merge.resolve({ ok: true, mergeCommit: "merge-commit" });
+      await expect(approval).resolves.toEqual({ ok: true });
+      await vi.waitFor(() => expect(orchestrator.hasInFlightWork()).toBe(false));
+      expect(getCard("drain-delivery").status).toBe("done");
+      expect(delivery()).toMatchObject({ status: "finished", ok: 1 });
+      expect(db.select().from(repoLeases).all()).toEqual([]);
+    });
+
+    it("a draining worker stops claiming pending deliveries", async () => {
+      card("drain-pending", "reviewing");
+      plan("drain-pending");
+      completedRun("drain-pending", "drain-pending-run");
+      const orchestrator = new Orchestrator({ autoStart: false });
+      orchestrator.startDraining();
+
+      // The delivery lands after SIGTERM: another worker must pick it up.
+      db.insert(reviewDeliveries)
+        .values({
+          id: "drain-pending-delivery",
+          runId: "drain-pending-run",
+          cardId: "drain-pending",
+          repoId: "repo-1",
+          fromStatus: "review",
+          approvedBy: "human",
+          status: "pending",
+          createdAt: now(),
+        })
+        .run();
+
+      orchestrator.pump();
+      await settle();
+
+      expect(
+        db
+          .select()
+          .from(reviewDeliveries)
+          .where(eq(reviewDeliveries.id, "drain-pending-delivery"))
+          .get(),
+      ).toMatchObject({ status: "pending", workerId: null });
+      expect(db.select().from(repoLeases).all()).toEqual([]);
+      expect(mocks.mergeBranch).not.toHaveBeenCalled();
+      // A pending, unclaimed delivery is not this worker's work.
+      expect(orchestrator.hasInFlightWork()).toBe(false);
     });
   });
 
