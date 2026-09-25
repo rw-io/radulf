@@ -22,10 +22,29 @@ const REAL_CRITERIA = `# Acceptance criteria for Build CLI integrations
 describe("probeCommands", () => {
   it("takes the check commands and leaves the bare filenames", () => {
     expect(probeCommands(REAL_CRITERIA)).toEqual([
-      "grep -q 'detect_clis' .ralph/PLAN.md",
-      "find bin -type f -name 'wrap_*'",
-      "grep -q 'wrap_claude' bin/wrap_claude.*",
-      "test -f docs/USAGE.md",
+      { command: "grep -q 'detect_clis' .ralph/PLAN.md", expectFailure: false },
+      { command: "find bin -type f -name 'wrap_*'", expectFailure: false },
+      { command: "grep -q 'wrap_claude' bin/wrap_claude.*", expectFailure: false },
+      { command: "test -f docs/USAGE.md", expectFailure: false },
+    ]);
+  });
+
+  it("marks a check the criterion says must fail", () => {
+    // Written by the planner for a rename: the old name must be gone, so the
+    // grep is right when it exits 1. Read as an ordinary check it can never pass.
+    expect(
+      probeCommands("- [ ] `grep -rq 'old_name' src docs` FAILS (exit 1, the old name is gone everywhere)."),
+    ).toEqual([{ command: "grep -rq 'old_name' src docs", expectFailure: true }]);
+    expect(
+      probeCommands(
+        "- [ ] `grep -q new_name src/a.ts` succeeds and `grep -rq old_name src/` fails (no remaining references)",
+      ),
+    ).toEqual([
+      { command: "grep -q new_name src/a.ts", expectFailure: false },
+      { command: "grep -rq old_name src/", expectFailure: true },
+    ]);
+    expect(probeCommands("`test -e build/` exits non-zero")).toEqual([
+      { command: "test -e build/", expectFailure: true },
     ]);
   });
 
@@ -47,12 +66,14 @@ describe("probeCommands", () => {
 
   it("keeps the globs real criteria are written with", () => {
     expect(probeCommands("`find bin -type f -name 'wrap_*'`")).toEqual([
-      "find bin -type f -name 'wrap_*'",
+      { command: "find bin -type f -name 'wrap_*'", expectFailure: false },
     ]);
   });
 
   it("counts a check written twice once", () => {
-    expect(probeCommands("`test -f a` and again `test -f a`")).toEqual(["test -f a"]);
+    expect(probeCommands("`test -f a` and again `test -f a`")).toEqual([
+      { command: "test -f a", expectFailure: false },
+    ]);
   });
 
   it("returns nothing for criteria with no commands at all", () => {
@@ -84,9 +105,33 @@ describe("runAcceptanceProbe", () => {
       ctx,
     });
     expect(results).toEqual([
-      { command: "test -f present.txt", ok: true, output: "" },
-      { command: "test -f missing.txt", ok: false, output: "" },
+      { command: "test -f present.txt", expectFailure: false, ok: true, output: "" },
+      { command: "test -f missing.txt", expectFailure: false, ok: false, output: "" },
     ]);
+  });
+
+  it("inverts a check the criterion says must fail", async () => {
+    fs.writeFileSync(path.join(dir, "present.txt"), "here");
+    const results = await runAcceptanceProbe({
+      acceptanceCriteria: "`test -f present.txt` fails and `test -f missing.txt` fails",
+      worktreePath: dir,
+      ctx,
+    });
+    expect(results).toEqual([
+      { command: "test -f present.txt", expectFailure: true, ok: false, output: "" },
+      { command: "test -f missing.txt", expectFailure: true, ok: true, output: "" },
+    ]);
+  });
+
+  it("keeps what an inverted check printed when it exited 0", async () => {
+    fs.writeFileSync(path.join(dir, "a.ts"), "old_name\n");
+    const results = await runAcceptanceProbe({
+      acceptanceCriteria: "`grep -rl old_name .` fails",
+      worktreePath: dir,
+      ctx,
+    });
+    expect(results[0].ok).toBe(false);
+    expect(results[0].output).toContain("a.ts");
   });
 
   it("does not let the run's command prefix swallow the check", async () => {
@@ -133,11 +178,15 @@ describe("runAcceptanceProbe", () => {
 describe("repairTaskText", () => {
   it("names the commands and what they printed", () => {
     const text = repairTaskText([
-      { command: "test -f docs/USAGE.md", ok: false, output: "" },
-      { command: "grep -q wrap_avy bin/cli-agent", ok: false, output: "no such file" },
+      { command: "test -f docs/USAGE.md", expectFailure: false, ok: false, output: "" },
+      { command: "grep -q wrap_avy bin/cli-agent", expectFailure: false, ok: false, output: "no such file" },
+      { command: "grep -rq old_name src", expectFailure: true, ok: false, output: "" },
     ]);
     expect(text).toContain("`test -f docs/USAGE.md`");
     expect(text).toContain("no such file");
+    // A check that was meant to fail needs saying so, or the agent will try
+    // to make the grep match.
+    expect(text).toContain("`grep -rq old_name src` (the criterion says this must exit non-zero, and it exited 0)");
     // The agent cannot see the probe, so the task has to explain itself.
     expect(text).toContain("after you signalled DONE");
   });

@@ -64,10 +64,28 @@ const BACKTICK_SPAN = /`([^`\n]+)`/g;
  */
 const SHELL_METACHARACTER = /[;&|$<>()]/;
 
+/**
+ * Prose right after a span that says the command is meant to exit non-zero:
+ * "`grep -rq old_name src` fails (no references remain)". Such a criterion is
+ * disproven by a ZERO exit, so the probe inverts it. Read the other way round,
+ * a correctly written negative criterion sent every card that had one into a
+ * repair task it could not satisfy.
+ */
+const EXPECT_FAILURE =
+  /^\s*(?:fails|(?:exits|returns) (?:with )?(?:a )?non-?zero|does not succeed|must fail|should fail|finds nothing|matches nothing)\b/i;
+
+export type ProbeCommand = {
+  command: string;
+  /** The criterion says this command must exit non-zero. */
+  expectFailure: boolean;
+};
+
 export type ProbeResult = {
   command: string;
-  /** False only when the command ran and exited non-zero — the one thing this
-   * probe is entitled to conclude. */
+  expectFailure: boolean;
+  /** False only when the command ran and exited the wrong way: non-zero, or
+   * zero for a check the criterion says must fail. The one thing this probe is
+   * entitled to conclude. */
   ok: boolean;
   output: string;
 };
@@ -78,18 +96,21 @@ export type ProbeResult = {
  * Backticks in these documents hold both commands (`test -f docs/USAGE.md`)
  * and bare filenames (`bin/wrap_claude`), so a span counts only when its first
  * word is an allowed check command, something follows it, and the whole span
- * is one command rather than a shell script. Duplicates are dropped: the same
- * check written against two criteria is still one check.
+ * is one command rather than a shell script. A span the criterion says `fails`
+ * is marked so (EXPECT_FAILURE). Duplicates are dropped: the same check
+ * written against two criteria is still one check.
  */
-export function probeCommands(acceptanceCriteria: string): string[] {
-  const found = new Set<string>();
-  for (const [, span] of acceptanceCriteria.matchAll(BACKTICK_SPAN)) {
-    const command = span.trim();
+export function probeCommands(acceptanceCriteria: string): ProbeCommand[] {
+  const found = new Map<string, ProbeCommand>();
+  for (const match of acceptanceCriteria.matchAll(BACKTICK_SPAN)) {
+    const command = match[1].trim();
     if (SHELL_METACHARACTER.test(command)) continue;
     const [head, ...rest] = command.split(/\s+/);
-    if (rest.length > 0 && PROBE_ALLOWED.has(head)) found.add(command);
+    if (rest.length === 0 || !PROBE_ALLOWED.has(head) || found.has(command)) continue;
+    const after = acceptanceCriteria.slice(match.index + match[0].length);
+    found.set(command, { command, expectFailure: EXPECT_FAILURE.test(after) });
   }
-  return [...found];
+  return [...found.values()];
 }
 
 /**
@@ -107,7 +128,7 @@ export async function runAcceptanceProbe(opts: {
 }): Promise<ProbeResult[]> {
   const { ctx } = opts;
   const results: ProbeResult[] = [];
-  for (const command of probeCommands(opts.acceptanceCriteria)) {
+  for (const { command, expectFailure } of probeCommands(opts.acceptanceCriteria)) {
     // The prefix is newline-separated lines ending in `|| true`, with no
     // trailing separator of its own. Concatenating the command straight onto
     // it makes it the right-hand side of that `||`, which never runs — the
@@ -123,10 +144,10 @@ export async function runAcceptanceProbe(opts: {
           ? await runSandboxedCommand(
               prefixed,
               ctx.srtConfig,
-              (wrapped) => runOne(command, wrapped, opts.worktreePath, ctx.env),
+              (wrapped) => runOne(command, expectFailure, wrapped, opts.worktreePath, ctx.env),
               { tmpdir: ctx.tmpdir },
             )
-          : await runOne(command, prefixed, opts.worktreePath, ctx.env),
+          : await runOne(command, expectFailure, prefixed, opts.worktreePath, ctx.env),
       );
     } catch (e) {
       console.warn(`acceptance probe skipped "${command}": ${errorMessage(e)}`);
@@ -140,30 +161,37 @@ export async function runAcceptanceProbe(opts: {
  * not be built. */
 async function runOne(
   command: string,
+  expectFailure: boolean,
   toRun: string,
   cwd: string,
   env: NodeJS.ProcessEnv | undefined,
 ): Promise<ProbeResult> {
+  const trimmed = (stdout: string | undefined, stderr: string | undefined) =>
+    `${stdout ?? ""}${stderr ?? ""}`.trim().slice(0, PROBE_OUTPUT_CHARS);
   try {
-    await execAsync(toRun, { cwd, env, timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER });
-    return { command, ok: true, output: "" };
+    const { stdout, stderr } = await execAsync(toRun, { cwd, env, timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BUFFER });
+    // A zero exit disproves only a check the criterion says must fail.
+    return { command, expectFailure, ok: !expectFailure, output: expectFailure ? trimmed(stdout, stderr) : "" };
   } catch (e) {
     const err = e as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
     // A timeout or a missing binary says nothing about the criterion — only
-    // a command that ran to a non-zero exit does.
-    if (err.killed || typeof err.code !== "number") return { command, ok: true, output: "" };
-    const output = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim().slice(0, PROBE_OUTPUT_CHARS);
-    return { command, ok: false, output };
+    // a command that ran to an exit status does.
+    if (err.killed || typeof err.code !== "number") return { command, expectFailure, ok: true, output: "" };
+    return { command, expectFailure, ok: expectFailure, output: expectFailure ? "" : trimmed(err.stdout, err.stderr) };
   }
 }
 
 /** The repair task appended to the private plan when checks failed. Names the
  * commands and what they printed, because the agent cannot see this probe. */
 export function repairTaskText(failures: ProbeResult[]): string {
-  const lines = failures.map((f) => `  - \`${f.command}\`${f.output ? `\n    ${f.output.split("\n").join("\n    ")}` : ""}`);
+  const lines = failures.map((f) => {
+    const verdict = f.expectFailure ? " (the criterion says this must exit non-zero, and it exited 0)" : "";
+    return `  - \`${f.command}\`${verdict}${f.output ? `\n    ${f.output.split("\n").join("\n    ")}` : ""}`;
+  });
   return [
     "Repair the acceptance checks that do not pass yet. These commands were run",
-    "in the worktree after you signalled DONE, and each exited non-zero:",
+    "in the worktree after you signalled DONE, and each exited non-zero (or,",
+    "where noted, exited 0 when the criterion says it must fail):",
     "",
     ...lines,
     "",
