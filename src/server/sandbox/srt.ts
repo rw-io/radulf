@@ -178,13 +178,9 @@ export function buildFilesystemConfig(opts: {
   const protectedRoots = [
     ...new Set([HOME, DATA_DIR, WORKTREES_DIR, CLONES_DIR, ...repositoryRoots]),
   ];
-  const siblingRepositoryRoots = repositoryRoots.filter((root) => {
-    const relative = path.relative(path.resolve(root), path.resolve(opts.worktree));
-    const containsWorktree =
-      relative === "" ||
-      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
-    return !containsWorktree;
-  });
+  const siblingRepositoryRoots = repositoryRoots.filter(
+    (root) => !isInsideOrEqual(path.resolve(opts.worktree), path.resolve(root)),
+  );
   const denyRead = [...protectedRoots, ...credentialBackstopDenylist()];
   const rawAllowRead = [
     opts.worktree,

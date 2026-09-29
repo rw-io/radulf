@@ -235,6 +235,19 @@ describe("buildFilesystemConfig", () => {
     ]));
   });
 
+  it("write-denies only repository roots that do not contain the worktree", () => {
+    const cfg = buildFilesystemConfig({
+      worktree: "/browse/worktrees/run-1",
+      gitCommonDir: "/browse/active/.git",
+      tmpdir: "/data/runtmp/run-1/tmp",
+      cacheRoot: "/data/runtmp/run-1/cache",
+      repositoryRoots: ["/browse", "/browse/worktrees/run-1", "/browse/worktrees/run-1-evil"],
+    });
+    expect(cfg.denyWrite).not.toContain("/browse");
+    expect(cfg.denyWrite).not.toContain("/browse/worktrees/run-1");
+    expect(cfg.denyWrite).toContain("/browse/worktrees/run-1-evil");
+  });
+
   it("keeps the credential backstop, including gh's store, even though $HOME is already denied", () => {
     // Spec 15 gave the HOST process the operator's GitHub credential to push
     // and open PRs. The agent must gain nothing from that: this fails if a
