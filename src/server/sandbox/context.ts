@@ -15,6 +15,7 @@ import {
 } from "./cgroup";
 import { detectMacDiskMechanism } from "./diskWatchdog";
 import { buildRunSandboxConfig, resolveGitCommonDir } from "./srt";
+import { createSerialQueue } from "./serialQueue";
 
 /**
  * Per-run sandbox context (spec 14, resolved design question 4): ONE factory
@@ -229,20 +230,7 @@ export async function createRunSandbox(
     }
     return [...processGroups];
   };
-  let operationTail = Promise.resolve();
-  const runExclusive = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const previous = operationTail;
-    let release: () => void = () => undefined;
-    operationTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  };
+  const runExclusive = createSerialQueue();
   return {
     runId,
     root,

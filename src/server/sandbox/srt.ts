@@ -17,6 +17,7 @@ import { CLONES_DIR, DATA_DIR, WORKTREES_DIR } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
 import { git } from "../git";
 import { isInsideOrEqual } from "./pathGuard";
+import { createSerialQueue } from "./serialQueue";
 
 /**
  * Layer 1 — OS sandbox on agent bash (spec 14 Phase 6), via
@@ -377,17 +378,16 @@ export function resetSandboxRuntimeForTests(): void {
 
 /**
  * Serializing queue for the wrap-and-`updateConfig` step (PLAN.md Phase 18.2,
- * superseding Phase 4's hard-throw guard below). `sandboxQueueTail` is a
- * promise-chain mutex: each call captures the current tail, replaces it with
- * its own "done" promise, then awaits the tail it captured — so calls take
- * that step one at a time, in arrival order, without rejecting any of them.
+ * superseding Phase 4's hard-throw guard below). `serializeSandboxWrap` is a
+ * promise-chain mutex (`createSerialQueue`), so calls take that step one at a
+ * time, in arrival order, without rejecting any of them.
  *
  * Only that step is serialized. Two commands that agree on network policy run
  * concurrently, which is what one-loop-per-repo (Phase 10) needs: an
  * `npm install` in one repo must not block every bash command in another for
  * minutes. What keeps them safe is the claim below, not this queue.
  */
-let sandboxQueueTail: Promise<void> = Promise.resolve();
+const serializeSandboxWrap = createSerialQueue();
 
 /**
  * The only slice of `SandboxRuntimeConfig` that `updateConfig()` actually
@@ -655,20 +655,17 @@ async function wrapUnderPolicy(
   runConfig: SandboxRuntimeConfig,
   tmpdir?: string,
 ): Promise<string> {
-  const myTurn = sandboxQueueTail;
-  const { promise: myDone, resolve: releaseMyTurn } = Promise.withResolvers<void>();
-  sandboxQueueTail = myDone;
-  await myTurn;
-  const previous = process.env.CLAUDE_CODE_TMPDIR;
-  try {
-    if (tmpdir !== undefined) process.env.CLAUDE_CODE_TMPDIR = tmpdir;
-    SandboxManager.updateConfig(runConfig);
-    return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
-  } finally {
-    if (previous === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
-    else process.env.CLAUDE_CODE_TMPDIR = previous;
-    releaseMyTurn();
-  }
+  return serializeSandboxWrap(async () => {
+    const previous = process.env.CLAUDE_CODE_TMPDIR;
+    try {
+      if (tmpdir !== undefined) process.env.CLAUDE_CODE_TMPDIR = tmpdir;
+      SandboxManager.updateConfig(runConfig);
+      return await SandboxManager.wrapWithSandbox(command, undefined, runConfig);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
+      else process.env.CLAUDE_CODE_TMPDIR = previous;
+    }
+  });
 }
 
 /**
