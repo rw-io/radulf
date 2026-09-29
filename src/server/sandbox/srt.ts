@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 import {
@@ -529,13 +529,71 @@ function killProcessGroup(pid: number): void {
   }
 }
 
+const EXIT_STDIO_IDLE_MS = 100;
+
+/**
+ * Resolve with the shell's exit code once its output is drained. `exit` can
+ * fire while stdout/stderr still hold unread chunks, so resolving there and
+ * destroying the pipes drops the tail of the output. Wait for both pipes to
+ * end instead — or, when a backgrounded descendant inherited them and keeps
+ * them open, for the pipes to fall idle for a short grace after `exit`. This
+ * is pi's own local-backend behavior, which it does not export.
+ */
+function waitForChildOutput(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    let exitCode: number | null = null;
+    let exited = false;
+    let settled = false;
+    let openPipes = [child.stdout, child.stderr].filter(Boolean).length;
+    let idle: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (idle) clearTimeout(idle);
+      resolve(exitCode);
+    };
+    const armIdle = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, EXIT_STDIO_IDLE_MS);
+    };
+    const onEnd = () => {
+      openPipes -= 1;
+      if (exited && openPipes === 0) finish();
+    };
+    const onData = () => {
+      if (exited && !settled) armIdle();
+    };
+    for (const pipe of [child.stdout, child.stderr]) {
+      pipe?.once("end", onEnd);
+      pipe?.on("data", onData);
+    }
+    child.once("error", (e) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    });
+    child.once("exit", (code) => {
+      exited = true;
+      exitCode = code;
+      if (openPipes === 0) finish();
+      else armIdle();
+    });
+  });
+}
+
 /** Local bash backend that records the detached shell PID in trusted parent
  * memory immediately after spawn. An in-sandbox command can neither erase nor
  * replace this ledger. */
-function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
+export function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
   return {
     async exec(command, cwd, options) {
       if (options.signal?.aborted) throw new Error("aborted");
+      const timeoutMs = options.timeout === undefined ? undefined : options.timeout * 1000;
+      // pi's backend rejects these too: a zero timer would kill the command
+      // before it ran, and a non-finite one would never fire.
+      if (timeoutMs !== undefined && !(Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+        throw new Error("Invalid timeout: must be a finite number of seconds");
+      }
       const shell = getShellConfig();
       const fromStdin = shell.commandTransport === "stdin";
       tracker?.markCommandStarted();
@@ -555,7 +613,6 @@ function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
       child.stdout?.on("data", options.onData);
       child.stderr?.on("data", options.onData);
       let timedOut = false;
-      const timeoutMs = options.timeout === undefined ? undefined : options.timeout * 1000;
       const timeout = timeoutMs === undefined
         ? undefined
         : setTimeout(() => {
@@ -567,10 +624,7 @@ function createTrackedBashOperations(tracker?: ProcessTracker): BashOperations {
       };
       options.signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        const exitCode = await new Promise<number | null>((resolve, reject) => {
-          child.once("error", reject);
-          child.once("exit", resolve);
-        });
+        const exitCode = await waitForChildOutput(child);
         if (options.signal?.aborted) throw new Error("aborted");
         if (timedOut) throw new Error(`timeout:${options.timeout}`);
         return { exitCode: exitCode ?? 1 };
