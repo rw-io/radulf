@@ -6,9 +6,9 @@ import { setupTestStateDir } from "@/testUtils/testDataDir";
 
 const root = setupTestStateDir("radulf-repos-route-");
 
-const { db, repos } = await import("@/db");
+const { db, repos, now, CLONES_DIR } = await import("@/db");
 const { upsertSettingJson } = await import("@/db");
-const { POST } = await import("./route");
+const { GET, POST } = await import("./route");
 
 /** Inside the browsable root the settings below point at. */
 let inside: string;
@@ -72,5 +72,23 @@ describe("POST /api/repos", () => {
     const response = await POST(post({ name: "gated", path: moved, gateCommand: "  make check " }));
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({ name: "gated", gateCommand: "make check" });
+  });
+});
+
+describe("GET /api/repos", () => {
+  it("reports an unset push after merge as the default it resolves to (spec 33)", async () => {
+    const row = (id: string, repoPath: string, pushAfterMerge: number | null) =>
+      db.insert(repos)
+        .values({ id, name: id, path: repoPath, defaultBranch: "main", pushAfterMerge, createdAt: now() })
+        .run();
+    row("cloned", path.join(CLONES_DIR, "cloned"), null);
+    row("local", path.join(root, "local"), null);
+    row("local-on", path.join(root, "local-on"), 1);
+    row("cloned-off", path.join(CLONES_DIR, "cloned-off"), 0);
+
+    const listed = (await (await GET()).json()) as { name: string; pushAfterMerge: number | null }[];
+    const pushes = Object.fromEntries(listed.map((repo) => [repo.name, repo.pushAfterMerge]));
+
+    expect(pushes).toMatchObject({ cloned: 1, local: 0, "local-on": 1, "cloned-off": 0 });
   });
 });

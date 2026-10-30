@@ -59,3 +59,22 @@ describe("PATCH /api/repos/[id] gate command (spec 27)", () => {
     expect(db.select().from(repos).get()!.path).toBe("/tmp/repo-route");
   });
 });
+
+describe("PATCH /api/repos/[id] push after merge (spec 33)", () => {
+  it("stores true as 1 and false as 0", async () => {
+    const on = await patch({ pushAfterMerge: true });
+    expect(on.status).toBe(200);
+    expect(db.select().from(repos).get()!.pushAfterMerge).toBe(1);
+
+    const off = await patch({ pushAfterMerge: false });
+    expect(off.status).toBe(200);
+    expect(db.select().from(repos).get()!.pushAfterMerge).toBe(0);
+  });
+
+  it("rejects a push after merge that is not a boolean", async () => {
+    const response = await patch({ pushAfterMerge: "yes" });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/pushAfterMerge must be a boolean/);
+    expect(db.select().from(repos).get()!.pushAfterMerge).toBe(0);
+  });
+});

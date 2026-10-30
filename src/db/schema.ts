@@ -14,6 +14,10 @@ export const repos = sqliteTable("repos", {
   // Spec 27: the repository's own whole-card gate, `make check` for instance,
   // run by the orchestrator before each evaluation cycle. Null means none.
   gateCommand: text("gate_command"),
+  // Spec 33 decision 4: push the base branch after an approved local merge.
+  // 1 on, 0 off; null means the default, on for a repository Radulf cloned
+  // and off for one registered by local path (`pushAfterMergeFor`).
+  pushAfterMerge: integer("push_after_merge"),
   createdAt: text("created_at").notNull(),
 });
 

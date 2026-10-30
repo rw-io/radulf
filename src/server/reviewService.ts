@@ -15,6 +15,7 @@ import {
   type CardStatus,
 } from "@/db";
 import { emitEvent } from "./events";
+import { pushBase, reconcileBase, type ReconcileResult } from "./baseReconcile";
 import {
   hasRemote,
   mergeBaseIntoWorktree,
@@ -22,6 +23,7 @@ import {
   pushBranch,
   removeWorktree,
   stripRalphForDelivery,
+  type RemoteTarget,
 } from "./git";
 import { createPullRequest, findOpenPullRequest, githubStatus, invalidateGithubStatus } from "./github";
 import { announceCardDone, type DoneOutcome } from "./jiraAnnounce";
@@ -29,9 +31,11 @@ import { getSettings } from "./settings";
 import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
-import { getRepo } from "./repos";
+import { getRepo, pushAfterMergeFor } from "./repos";
+import { resolveRemoteTarget } from "./remoteTarget";
 import { acquireRepoLease, releaseRepoLease } from "./repoLeases";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
+import { errorMessage } from "@/shared/errorMessage";
 import { checkRepoIntegrity, loadBaseline, readRepoConfig, recordRefWrite, removeBaseline, saveBaseline } from "./integrity";
 import type { StageDependencies } from "./stage";
 
@@ -537,6 +541,33 @@ export class ReviewService {
       return this.deliverPullRequest(card, run, repo, baseBranch, expectedStatus, approvedBy);
     }
 
+    // Spec 33 decision 4: a repository that pushes after merging reconciles
+    // its base with the remote's before the merge and pushes it after. An
+    // Improvement Run's base is local-only, so its cards never push. With the
+    // setting off there is no fetch: delivery is exactly what it was before.
+    const recordBaseWrite = (sha: string) =>
+      recordRefWrite(repo.path, `refs/heads/${baseBranch}`, sha, this.deps.workerId());
+    const push =
+      pushAfterMergeFor(repo) &&
+      !belongsToImprovementRun(card.repoId, run.baseBranch) &&
+      (await hasRemote(repo.path));
+    let target: RemoteTarget | null = null;
+    if (push) {
+      let reconciled: ReconcileResult;
+      try {
+        // Throws when the connection the repository matched was deleted since.
+        target = (await resolveRemoteTarget(repo.path)).target;
+        reconciled = await reconcileBase(repo.path, baseBranch, target, recordBaseWrite);
+      } catch (e) {
+        reconciled = { ok: false, error: errorMessage(e) };
+      }
+      if (!reconciled.ok) {
+        this.deps.moveCard(card.id, "reviewing", "needs_attention", reconciled.error);
+        decided(card.id, runId, { reconcileFailed: reconciled.error });
+        return { ok: false, error: reconciled.error };
+      }
+    }
+
     // Spec 20: Radulf just moved the base branch. Tell the runs still open on
     // this repo, or each one reports our own merge as tampering at its run-end
     // integrity check. The base branch is deliberately outside the managed
@@ -552,8 +583,7 @@ export class ReviewService {
       baseBranch,
       run.branch,
       `ralph: merge "${card.title}" (card ${card.id})`,
-      (mergeCommit) =>
-        recordRefWrite(repo.path, `refs/heads/${baseBranch}`, mergeCommit, this.deps.workerId()),
+      recordBaseWrite,
     );
     if (!result.ok) {
       if (result.conflict && (await this.reloopForConflict(card, run, baseBranch, result.error!))) {
@@ -563,6 +593,20 @@ export class ReviewService {
       this.deps.moveCard(card.id, "reviewing", "needs_attention", result.error);
       decided(card.id, runId, { mergeFailed: result.error });
       return { ok: false, error: result.error };
+    }
+
+    // Done means pushed. A failed push leaves the merge in place and the card
+    // unfinished: Retry merge runs this delivery again, where the reconcile
+    // picks up anything pushed since, the merge reports alreadyMerged, and
+    // the push runs once more.
+    if (target) {
+      const pushed = await pushBase(repo.path, baseBranch, target, recordBaseWrite);
+      if (!pushed.ok) {
+        const reason = `merged into \`${baseBranch}\` locally, but the push failed: ${pushed.error}. Press Retry merge to push it.`;
+        this.deps.moveCard(card.id, "reviewing", "needs_attention", reason);
+        decided(card.id, runId, { mergeCommit: result.mergeCommit, pushFailed: reason });
+        return { ok: false, error: reason };
+      }
     }
 
     await this.completeApproval(

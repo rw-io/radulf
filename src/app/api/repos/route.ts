@@ -2,13 +2,16 @@ import { asc } from "drizzle-orm";
 import { db, repos } from "@/db";
 import { assertInsideBrowsableRoot } from "@/server/folderBrowser";
 import { assertBranchExists, assertUsableRepo, tryGit } from "@/server/git";
-import { parseGateCommand, registerRepo } from "@/server/repos";
+import { parseGateCommand, pushAfterMergeFor, registerRepo } from "@/server/repos";
 import { record } from "@/server/requestValidation";
 import { getSettings } from "@/server/settings";
 import { json, err, handle } from "../_lib";
 
 export async function GET() {
-  return json(db.select().from(repos).orderBy(asc(repos.createdAt)).all());
+  // Spec 33: an unset push after merge is listed as the default it resolves
+  // to, so Settings shows what delivery will actually do.
+  const rows = db.select().from(repos).orderBy(asc(repos.createdAt)).all();
+  return json(rows.map((repo) => ({ ...repo, pushAfterMerge: pushAfterMergeFor(repo) ? 1 : 0 })));
 }
 
 export async function POST(req: Request) {

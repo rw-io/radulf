@@ -1022,6 +1022,33 @@ function GateCommandField({ repo, onChange }: { repo: Repo; onChange: () => void
   );
 }
 
+/** Spec 33: whether an approved local merge pushes this repository's base. */
+function PushAfterMergeToggle({ repo, onChange }: { repo: Repo; onChange: () => void }) {
+  const [error, setError] = useState("");
+
+  async function save(pushAfterMerge: boolean) {
+    setError("");
+    try {
+      await api(`/api/repos/${repo.id}`, { method: "PATCH", json: { pushAfterMerge } });
+      onChange();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <ToggleRow
+        title="Push after merge"
+        description="Push the base branch to its remote after Radulf merges an approved card. On by default for repositories Radulf cloned."
+        checked={repo.pushAfterMerge === 1}
+        onChange={(checked) => void save(checked)}
+      />
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
 function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void }) {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -1089,6 +1116,7 @@ function ReposSection({ repos, onChange }: { repos: Repo[]; onChange: () => void
               </div>
               <p title={r.path} className="mt-1.5 truncate font-mono text-xs text-foreground/45">{r.path}</p>
               <GateCommandField key={r.gateCommand ?? ""} repo={r} onChange={onChange} />
+              <PushAfterMergeToggle repo={r} onChange={onChange} />
               {removeError?.repoId === r.id && <p role="alert" className="mt-1.5 text-xs text-red-400">{removeError.message}</p>}
             </div>
             <button

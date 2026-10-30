@@ -1,0 +1,1 @@
+ALTER TABLE `repos` ADD `push_after_merge` integer;

@@ -467,6 +467,8 @@ export async function mergeBranch(
   mergeCommit?: string;
   error?: string;
   conflict?: boolean;
+  /** On a conflict, git's own output, for a caller that words the error itself. */
+  out?: string;
   alreadyMerged?: boolean;
 }> {
   const original = await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD");
@@ -552,7 +554,7 @@ export async function mergeBranch(
     // that moved under it. The caller hands it back to the loop (see
     // mergeBaseIntoWorktree) rather than dead-ending. Flag it so the caller can
     // tell a conflict apart from an unrecoverable failure.
-    return { ok: false, conflict: true, error: `merge conflict — rebase needed: ${merge.out}` };
+    return { ok: false, conflict: true, out: merge.out, error: `merge conflict — rebase needed: ${merge.out}` };
   }
   await removeRalphDir(repoPath);
   const commit = await tryGit(repoPath, "commit", "-m", message);
@@ -576,6 +578,40 @@ export async function mergeBranch(
   onCommitted?.(mergeCommit);
   await restore();
   return { ok: true, mergeCommit };
+}
+
+/**
+ * Move `branch` forward to `sha`, for spec 33's reconcile of a base that is
+ * behind its remote. Only ever a fast-forward. Checked out in `repoPath`, it
+ * is `merge --ff-only`, which refuses anything else and updates the working
+ * tree, so a dirty tree is refused first exactly as `mergeBranch` refuses it.
+ * Not checked out, the ref moves with `update-ref` against the oid it was read
+ * at, once that oid is confirmed to be an ancestor of `sha`. Callers hold the
+ * repo lease, as for `mergeBranch`.
+ */
+export async function fastForwardBranch(
+  repoPath: string,
+  branch: string,
+  sha: string
+): Promise<{ ok: boolean; error?: string }> {
+  const ref = `refs/heads/${branch}`;
+  const head = await tryGit(repoPath, "symbolic-ref", "-q", "HEAD");
+  if (head.ok && head.out === ref) {
+    if (await git(repoPath, "status", "--porcelain")) {
+      return {
+        ok: false,
+        error: `target checkout ${repoPath} has uncommitted changes; commit or stash them there, then press Retry merge`,
+      };
+    }
+    const merged = await tryGit(repoPath, "merge", "--ff-only", sha);
+    return merged.ok ? { ok: true } : { ok: false, error: `cannot fast-forward ${branch}: ${merged.out}` };
+  }
+  const old = await git(repoPath, "rev-parse", "--verify", ref);
+  if (!(await tryGit(repoPath, "merge-base", "--is-ancestor", old, sha)).ok) {
+    return { ok: false, error: `cannot fast-forward ${branch} to ${sha}: it is not ahead of ${old}` };
+  }
+  const moved = await tryGit(repoPath, "update-ref", ref, sha, old);
+  return moved.ok ? { ok: true } : { ok: false, error: `cannot fast-forward ${branch}: ${moved.out}` };
 }
 
 /**
