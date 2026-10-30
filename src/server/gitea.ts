@@ -60,3 +60,24 @@ export async function giteaRequest<T>(
 export function getAuthenticatedUser(auth: GiteaAuth): Promise<{ login: string }> {
   return giteaRequest<{ login: string }>(auth, "GET", "/user");
 }
+
+export type GiteaRepository = { sshUrl: string; cloneUrl: string; htmlUrl: string };
+
+/** Returns null when the repository does not exist or the token cannot see it. */
+export async function getRepository(
+  auth: GiteaAuth,
+  owner: string,
+  repo: string,
+): Promise<GiteaRepository | null> {
+  try {
+    const r = await giteaRequest<{ ssh_url: string; clone_url: string; html_url: string }>(
+      auth,
+      "GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    );
+    return { sshUrl: r.ssh_url, cloneUrl: r.clone_url, htmlUrl: r.html_url };
+  } catch (e) {
+    if (e instanceof GiteaError && e.status === 404) return null;
+    throw e;
+  }
+}
