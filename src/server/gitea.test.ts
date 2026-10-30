@@ -180,17 +180,40 @@ describe("ci wait and merge", () => {
     const fetchMock = vi.fn(async () => new Response('{"message":"Please try again later"}', { status: 405 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await mergePull(auth, "o", "r", 7, 'ralph: merge "Fix x" (card c1)');
+    const result = await mergePull(auth, "o", "r", 7, 'ralph: merge "Fix x" (card c1)', "head-1");
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://h/api/v1/repos/o/r/pulls/7/merge");
     expect(init.method).toBe("POST");
+    expect(result).toEqual({ ok: false, notMergeable: true, message: "Please try again later" });
+  });
+
+  it("mergePull pins the merge to the head CI verified", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"message":"head out of date"}', { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await mergePull(auth, "o", "r", 7, 'ralph: merge "Fix x" (card c1)', "head-1");
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({
       Do: "merge",
       MergeTitleField: 'ralph: merge "Fix x" (card c1)',
       delete_branch_after_merge: true,
+      head_commit_id: "head-1",
     });
-    expect(result).toEqual({ ok: false, notMergeable: true, message: "Please try again later" });
+    // The branch moved under the merge: a refusal like any other, not a
+    // base to re-sync with.
+    expect(result).toEqual({ ok: false, notMergeable: false, message: "head out of date" });
+  });
+
+  it("mergePull still treats any other 409 as not mergeable", async () => {
+    vi.stubGlobal("fetch", async () => new Response('{"message":"merge push out of date"}', { status: 409 }));
+
+    expect(await mergePull(auth, "o", "r", 7, "t", "head-1")).toEqual({
+      ok: false,
+      notMergeable: true,
+      message: "merge push out of date",
+    });
   });
 
   it("mergePull reports any other refusal and rethrows an unreachable gitea", async () => {
@@ -203,13 +226,13 @@ describe("ci wait and merge", () => {
         .mockResolvedValueOnce(new Response("bad gateway", { status: 502 })),
     );
 
-    expect(await mergePull(auth, "o", "r", 7, "t")).toEqual({ ok: true });
-    expect(await mergePull(auth, "o", "r", 7, "t")).toEqual({
+    expect(await mergePull(auth, "o", "r", 7, "t", "head-1")).toEqual({ ok: true });
+    expect(await mergePull(auth, "o", "r", 7, "t", "head-1")).toEqual({
       ok: false,
       notMergeable: false,
       message: "not enough approvals",
     });
-    const err = (await mergePull(auth, "o", "r", 7, "t").catch((e: unknown) => e)) as GiteaError;
+    const err = (await mergePull(auth, "o", "r", 7, "t", "head-1").catch((e: unknown) => e)) as GiteaError;
     expect(err).toBeInstanceOf(GiteaError);
     expect(err.status).toBe(502);
   });

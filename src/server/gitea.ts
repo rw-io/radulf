@@ -187,13 +187,19 @@ export async function getCombinedStatus(
   };
 }
 
+/** Gitea's and Forgejo's 409 when the branch head is not `head_commit_id`. */
+const HEAD_MOVED = /head out of date/i;
+
 /**
  * Merge pull request `index` with a merge commit titled `title`, deleting its
- * branch afterwards. A refusal comes back as a result: 405 and 409 are the
- * pull request not being mergeable as it stands (the base moved, Gitea still
- * checking it, or a rule such as required approvals). A Gitea that did not
- * answer (no response, or a 5xx) throws, since the merge may or may not have
- * landed.
+ * branch afterwards. The merge is pinned to `headSha`, the commit CI
+ * verified, so Gitea refuses it if the branch moved in the meantime.
+ *
+ * A refusal comes back as a result: 405 and 409 are the pull request not
+ * being mergeable as it stands (the base moved, Gitea still checking it, or a
+ * rule such as required approvals), except the moved head, which re-syncing
+ * with the base cannot fix. A Gitea that did not answer (no response, or a
+ * 5xx) throws, since the merge may or may not have landed.
  */
 export async function mergePull(
   auth: GiteaAuth,
@@ -201,17 +207,20 @@ export async function mergePull(
   repo: string,
   index: number,
   title: string,
+  headSha: string,
 ): Promise<{ ok: true } | { ok: false; notMergeable: boolean; message: string }> {
   try {
     await giteaRequest(auth, "POST", `${pullsPath(owner, repo)}/${index}/merge`, {
       Do: "merge",
       MergeTitleField: title,
       delete_branch_after_merge: true,
+      head_commit_id: headSha,
     });
     return { ok: true };
   } catch (e) {
     if (!(e instanceof GiteaError) || e.status === null || e.status >= 500) throw e;
-    return { ok: false, notMergeable: e.status === 405 || e.status === 409, message: e.message };
+    const notMergeable = (e.status === 405 || e.status === 409) && !HEAD_MOVED.test(e.message);
+    return { ok: false, notMergeable, message: e.message };
   }
 }
 

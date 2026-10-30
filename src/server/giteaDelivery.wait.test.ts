@@ -267,7 +267,14 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
 
     await new ReviewService(deps).pollPullRequestWaits(NOW);
 
-    expect(mocks.mergePull).toHaveBeenCalledWith(AUTH, "o", "r", 7, 'ralph: merge "Fix the thing" (card card-1)');
+    expect(mocks.mergePull).toHaveBeenCalledWith(
+      AUTH,
+      "o",
+      "r",
+      7,
+      'ralph: merge "Fix the thing" (card card-1)',
+      "head-1",
+    );
     expectDone();
     expect(deps.moveCard).toHaveBeenCalledWith("card-1", "awaiting_ci", "reviewing", expect.any(String));
     expect(mocks.reconcileBase).toHaveBeenCalledWith(REPO_PATH, "main", TARGET, expect.any(Function));
@@ -310,6 +317,37 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
       sha: "merge-sha",
       workerId: "worker-test",
     });
+  });
+
+  it("head moved after ci ran parks the card instead of merging", async () => {
+    seedCard();
+    seedWait(10);
+    mocks.getPull.mockResolvedValue({ ...OPEN, headSha: "someone-elses-commit" });
+    const deps = makeDeps();
+
+    await new ReviewService(deps).pollPullRequestWaits(NOW);
+
+    const reason = `the pull request's branch moved after CI ran (someone else pushed to it): ${PR_URL}`;
+    expect(mocks.mergePull).not.toHaveBeenCalled();
+    expect(statusOf()).toBe("needs_attention");
+    expect(lastReason(deps)).toBe(reason);
+    expect(wait()).toMatchObject({ status: "failed", detail: reason });
+    expect(db.select().from(repoLeases).all()).toEqual([]);
+  });
+
+  it("a push racing the merge call is a refusal, not a re-sync", async () => {
+    seedCard();
+    seedWait(10);
+    mocks.mergePull.mockResolvedValue({ ok: false, notMergeable: false, message: "head out of date" });
+    const deps = makeDeps();
+
+    await new ReviewService(deps).pollPullRequestWaits(NOW);
+
+    expect(mocks.fetchBranchHead).not.toHaveBeenCalled();
+    expect(mocks.pushRef).not.toHaveBeenCalled();
+    expect(statusOf()).toBe("needs_attention");
+    expect(lastReason(deps)).toBe(`Gitea refused to merge ${PR_URL}: head out of date`);
+    expect(wait()?.status).toBe("failed");
   });
 
   it("pending past two hours times out", async () => {

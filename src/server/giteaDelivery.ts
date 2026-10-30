@@ -346,6 +346,12 @@ export class GiteaDelivery {
     // No status yet: CI gets the grace window to report one before the
     // repository is treated as having none.
     if (ci.state === null && sincePush < CI_GRACE_MS) return;
+    // Radulf merges exactly the commit CI verified: commits pushed onto the
+    // branch since are ones nobody here has seen.
+    if (pull.headSha !== wait.headSha) {
+      const reason = `the pull request's branch moved after CI ran (someone else pushed to it): ${wait.prUrl}`;
+      return this.park(wait, "awaiting_ci", "failed", reason);
+    }
     return this.underMergeClaim(wait, card, repo, auth.token, () => this.merge(wait, card, run, repo, auth, nowMs));
   }
 
@@ -388,7 +394,7 @@ export class GiteaDelivery {
     let merged: Awaited<ReturnType<typeof mergePull>>;
     try {
       const title = `ralph: merge "${card.title}" (card ${card.id})`;
-      merged = await mergePull(auth, wait.owner, wait.repo, wait.prNumber, title);
+      merged = await mergePull(auth, wait.owner, wait.repo, wait.prNumber, title, wait.headSha);
     } catch {
       // No answer: the merge may or may not have landed, and the next
       // tick's read of the pull request says which.
