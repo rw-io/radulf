@@ -585,9 +585,14 @@ export async function mergeBranch(
  * behind its remote. Only ever a fast-forward. Checked out in `repoPath`, it
  * is `merge --ff-only`, which refuses anything else and updates the working
  * tree, so a dirty tree is refused first exactly as `mergeBranch` refuses it.
- * Not checked out, the ref moves with `update-ref` against the oid it was read
- * at, once that oid is confirmed to be an ancestor of `sha`. Callers hold the
- * repo lease, as for `mergeBranch`.
+ * A clean tree can still hold ignored files the operator keeps (`.env`), and
+ * git's fast-forward silently overwrites one the remote starts tracking, so
+ * those are refused the way `mergeBranch` refuses them, and
+ * `--no-overwrite-ignore` makes git itself refuse any case the path check
+ * cannot see (an ignored file where the remote adds a directory). Not checked
+ * out, the ref moves with `update-ref` against the oid it was read at, once
+ * that oid is confirmed to be an ancestor of `sha`. Callers hold the repo
+ * lease, as for `mergeBranch`.
  */
 export async function fastForwardBranch(
   repoPath: string,
@@ -603,7 +608,14 @@ export async function fastForwardBranch(
         error: `target checkout ${repoPath} has uncommitted changes; commit or stash them there, then press Retry merge`,
       };
     }
-    const merged = await tryGit(repoPath, "merge", "--ff-only", sha);
+    const clobbered = await ignoredPathsTheBranchAdds(repoPath, ref, sha);
+    if (clobbered.length > 0) {
+      return {
+        ok: false,
+        error: `fast-forwarding ${branch} would overwrite ignored files in ${repoPath}: ${clobbered.join(", ")}; move them aside, then press Retry merge`,
+      };
+    }
+    const merged = await tryGit(repoPath, "merge", "--ff-only", "--no-overwrite-ignore", sha);
     return merged.ok ? { ok: true } : { ok: false, error: `cannot fast-forward ${branch}: ${merged.out}` };
   }
   const old = await git(repoPath, "rev-parse", "--verify", ref);
@@ -828,6 +840,8 @@ export async function fetchBranchHead(
  * Push `refspec` to the target. Never forced, the same rule as `pushBranch`:
  * a leading `+` would force this one ref, so it is refused outright, and a
  * remote that moved comes back as `rejected` for the caller to reconcile.
+ * Only `refspec` goes: `--no-follow-tags` overrides a host whose
+ * `push.followTags` would send tags along with it (spec 33 decision 4).
  */
 export async function pushRef(
   cwd: string,
@@ -837,7 +851,7 @@ export async function pushRef(
   if (refspec.startsWith("+")) throw new Error(`pushRef never forces: ${refspec}`);
   const { remote, env, secret } = remoteOf(target);
   try {
-    await execGit(cwd, ["push", "--", remote, refspec], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env });
+    await execGit(cwd, ["push", "--no-follow-tags", "--", remote, refspec], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env });
     return { ok: true };
   } catch (e) {
     const error = scrubSecret(gitFailure(e, "git push failed"), secret);

@@ -62,6 +62,13 @@ function advanceRemote(bare: string, file: string, content = file): string {
   return git(bare, "rev-parse", "main");
 }
 
+/** Ignore `pattern` in `dir` alone, the way an operator's own excludes do. */
+function ignoreLocally(dir: string, pattern: string): void {
+  const info = path.join(dir, ".git", "info");
+  fs.mkdirSync(info, { recursive: true });
+  fs.appendFileSync(path.join(info, "exclude"), `${pattern}\n`);
+}
+
 function isAncestor(dir: string, commitish: string, of: string): boolean {
   try {
     git(dir, "merge-base", "--is-ancestor", commitish, of);
@@ -120,6 +127,44 @@ describe("reconcileBase", () => {
     expect(!result.ok && result.error).toContain("has uncommitted changes");
     expect(git(clone, "rev-parse", "main")).toBe(before);
     expect(fs.readFileSync(path.join(clone, "README.md"), "utf8")).toBe("operator's edit");
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses to fast-forward over an ignored file the remote starts tracking", async () => {
+    const { bare, clone } = remoteAndClone();
+    const before = git(clone, "rev-parse", "main");
+    ignoreLocally(clone, ".env");
+    fs.writeFileSync(path.join(clone, ".env"), "OPERATOR_VALUE=1\n");
+    expect(git(clone, "status", "--porcelain")).toBe("");
+    advanceRemote(bare, ".env", "UPSTREAM_VALUE=1\n");
+    const writes: string[] = [];
+
+    const result = await reconcileBase(clone, "main", ORIGIN, (sha) => writes.push(sha));
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain("would overwrite ignored files");
+    expect(!result.ok && result.error).toContain(".env");
+    expect(fs.readFileSync(path.join(clone, ".env"), "utf8")).toBe("OPERATOR_VALUE=1\n");
+    expect(git(clone, "rev-parse", "main")).toBe(before);
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses to fast-forward when the remote adds a directory where an ignored file stands", async () => {
+    const { bare, clone } = remoteAndClone();
+    const before = git(clone, "rev-parse", "main");
+    ignoreLocally(clone, "cfg");
+    fs.writeFileSync(path.join(clone, "cfg"), "operator settings");
+    const other = cloneOf(bare);
+    fs.mkdirSync(path.join(other, "cfg"));
+    commit(other, "cfg/settings", "upstream settings");
+    git(other, "push", "-q", "origin", "HEAD:refs/heads/main");
+    const writes: string[] = [];
+
+    const result = await reconcileBase(clone, "main", ORIGIN, (sha) => writes.push(sha));
+
+    expect(result.ok).toBe(false);
+    expect(fs.readFileSync(path.join(clone, "cfg"), "utf8")).toBe("operator settings");
+    expect(git(clone, "rev-parse", "main")).toBe(before);
     expect(writes).toEqual([]);
   });
 

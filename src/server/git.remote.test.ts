@@ -115,6 +115,18 @@ describe("pushRef", () => {
     expect(git(bare, "rev-parse", "main")).toBe(theirs);
   });
 
+  it("pushRef pushes no tags, even with push.followTags on", async () => {
+    const { bare, clone } = remoteAndClone();
+    const tagged = commit(clone, "tagged.txt");
+    git(clone, "tag", "-a", "v1", "-m", "v1");
+    git(clone, "config", "push.followTags", "true");
+
+    expect(await pushRef(clone, { kind: "origin" }, "refs/heads/main:refs/heads/main")).toEqual({ ok: true });
+
+    expect(git(bare, "rev-parse", "main")).toBe(tagged);
+    expect(git(bare, "tag", "--list")).toBe("");
+  });
+
   it("pushRef refuses a forcing refspec", async () => {
     const { bare, clone } = remoteAndClone();
     const theirs = advanceRemote(bare, "theirs.txt");
