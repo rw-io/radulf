@@ -1720,13 +1720,14 @@ export class Orchestrator {
 
   /** Throw a 409 while `repoId` has work that deleting the repo would orphan:
    * a harness run in flight (or a loop still tearing down), a card holding the
-   * `reviewing` merge claim, or a running improvement run — including one
-   * still proposing before it has created a card. Synchronous, so a caller can
-   * delete the repo with no intervening await. */
+   * `reviewing` merge claim or waiting for CI on its pull request (spec 33),
+   * or a running improvement run, including one still proposing before it has
+   * created a card. Synchronous, so a caller can delete the repo with no
+   * intervening await. */
   assertRepoRemovable(repoId: string): void {
     // Any load at all, not pipelineBusy: with a concurrency cap above 1 a repo
     // can have a run in flight and still have a free slot (spec 20).
-    if (this.pipelineLoad(repoId) > 0 || this.cardInStatus(["reviewing"], repoId)) {
+    if (this.pipelineLoad(repoId) > 0 || this.cardInStatus(["reviewing", "awaiting_ci"], repoId)) {
       throw new ClientError(
         "cannot remove a repository while one of its tasks is running or merging — cancel it or wait for it to finish",
         409,

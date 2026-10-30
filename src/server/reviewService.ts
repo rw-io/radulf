@@ -32,6 +32,8 @@ import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { getRepo, pushAfterMergeFor } from "./repos";
+import { matchRepo } from "./forgeMatch";
+import { GiteaDelivery } from "./giteaDelivery";
 import { resolveRemoteTarget } from "./remoteTarget";
 import { acquireRepoLease, releaseRepoLease } from "./repoLeases";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
@@ -120,7 +122,15 @@ function decided(cardId: string, runId: string, payload: Record<string, unknown>
  * which keeps the review state machine independently testable.
  */
 export class ReviewService {
-  constructor(private readonly deps: ReviewServiceDependencies) {}
+  private readonly gitea: GiteaDelivery;
+
+  constructor(private readonly deps: ReviewServiceDependencies) {
+    this.gitea = new GiteaDelivery({
+      moveCard: this.deps.moveCard,
+      decided,
+      reloopForConflict: (...a) => this.reloopForConflict(...a),
+    });
+  }
 
   /** Approve a plan_review card and hand it back to the loop queue. */
   approvePlan(cardId: string): ReviewResult {
@@ -538,6 +548,11 @@ export class ReviewService {
       (card.openPr || getSettings().openPr) &&
       !belongsToImprovementRun(card.repoId, run.baseBranch)
     ) {
+      // Spec 33 decision 5: a repository on a connected Gitea or Forgejo
+      // instance gets its pull request there, merged by Radulf once CI
+      // passes. Any other keeps spec 15's GitHub path.
+      const forge = await matchRepo(repo.path);
+      if (forge) return this.gitea.deliver(card, run, repo, baseBranch, expectedStatus, approvedBy, forge);
       return this.deliverPullRequest(card, run, repo, baseBranch, expectedStatus, approvedBy);
     }
 

@@ -6,7 +6,7 @@ export type { CardStatus };
 export const RUNNING_STATUSES: readonly CardStatus[] = ["planning", "looping", "evaluating"];
 
 /** What the board's Active section shows. */
-export const ACTIVE_STATUSES: readonly CardStatus[] = ["planning", "ready", "looping", "evaluating", "paused", "reviewing"];
+export const ACTIVE_STATUSES: readonly CardStatus[] = ["planning", "ready", "looping", "evaluating", "paused", "reviewing", "awaiting_ci"];
 
 /**
  * Spec 17: statuses in which a scoping session can still change what gets
@@ -35,6 +35,7 @@ export const STATUS_LABELS: Record<CardStatus, string> = {
   paused: "Paused",
   review: "Ready for review",
   reviewing: "Applying review",
+  awaiting_ci: "Waiting for CI",
   needs_attention: "Needs attention",
   done: "Completed",
   abandoned: "Abandoned",

@@ -3269,6 +3269,23 @@ describe("Orchestrator cancellation lifecycle", () => {
       },
     );
 
+    it("refuses to remove a repository with a card waiting for CI", async () => {
+      // Spec 33: the card's run is finished and it holds no lease, but its
+      // pull request wait and worktree still belong to the repository.
+      card("waiting-card", "awaiting_ci");
+      plan("waiting-card");
+      completedRun("waiting-card", "waiting-run");
+      routeOrchestrator();
+
+      const response = await removeRepo1();
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toMatch(/cannot remove a repository/);
+      expect(repo1Exists()).toBe(true);
+      expect(getCard("waiting-card").status).toBe("awaiting_ci");
+      expect(mocks.removeWorktree).not.toHaveBeenCalled();
+    });
+
     it("refuses to remove a repository while a loop is still tearing down", async () => {
       // A loop tearing down: its card has already left the running statuses
       // but its run row is still `running`. The load is read from the

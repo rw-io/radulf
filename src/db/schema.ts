@@ -41,7 +41,9 @@ export type DiskLimitMechanism = (typeof DISK_LIMIT_MECHANISMS)[number];
 // evaluating → In Progress; review → In Review; reviewing is a short-lived
 // atomic decision claim; needs_attention → Needs Attention; done → Done.
 // (spec 14: the summarizer role is gone — the evaluator writes the summary,
-// so there is no `summarizing` status.)
+// so there is no `summarizing` status.) awaiting_ci (spec 33) is a card whose
+// Gitea pull request is open and waiting for CI; it holds no lease and no
+// pipeline slot.
 export const CARD_STATUSES = [
   "backlog",
   "todo",
@@ -53,6 +55,7 @@ export const CARD_STATUSES = [
   "paused",
   "review",
   "reviewing",
+  "awaiting_ci",
   "needs_attention",
   "done",
   "abandoned",
@@ -525,6 +528,37 @@ export const reviewDeliveries = sqliteTable(
     endedAt: text("ended_at"),
   },
   (table) => [index("review_deliveries_status_idx").on(table.status)],
+);
+
+// Spec 33 decision 5: one row per Gitea pull request Radulf opened and waits on.
+// The wait lives here rather than in a timer so it survives a restart and a
+// web/worker split; a worker polls the `waiting` rows. Cascades with its run.
+export const prWaits = sqliteTable(
+  "pr_waits",
+  {
+    id: text("id").primaryKey(),
+    cardId: text("card_id").notNull(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    repoId: text("repo_id").notNull(),
+    connectionId: text("connection_id").notNull(),
+    owner: text("owner").notNull(),
+    repo: text("repo").notNull(),
+    branch: text("branch").notNull(),
+    baseBranch: text("base_branch").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    prUrl: text("pr_url").notNull(),
+    headSha: text("head_sha").notNull(),
+    status: text("status")
+      .notNull()
+      .$type<"waiting" | "merged" | "ci_failed" | "closed" | "timed_out" | "abandoned" | "failed">(),
+    pushedAt: text("pushed_at").notNull(),
+    createdAt: text("created_at").notNull(),
+    endedAt: text("ended_at"),
+    detail: text("detail"),
+  },
+  (table) => [index("pr_waits_status_idx").on(table.status)],
 );
 
 // Spec 25 decision 6: one lease per repo path serializes git ref writes across

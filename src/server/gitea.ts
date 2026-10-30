@@ -81,3 +81,75 @@ export async function getRepository(
     throw e;
   }
 }
+
+export type GiteaPull = {
+  number: number;
+  url: string;
+  state: "open" | "closed";
+  merged: boolean;
+  mergeable: boolean;
+  headSha: string;
+  mergeCommitSha: string | null;
+};
+
+type PullJson = {
+  number: number;
+  html_url: string;
+  state: "open" | "closed";
+  merged: boolean;
+  mergeable: boolean;
+  head: { ref: string; sha: string };
+  base: { ref: string };
+  merge_commit_sha: string | null;
+};
+
+function toPull(p: PullJson): GiteaPull {
+  return {
+    number: p.number,
+    url: p.html_url,
+    state: p.state,
+    merged: p.merged,
+    mergeable: p.mergeable,
+    headSha: p.head.sha,
+    mergeCommitSha: p.merge_commit_sha ?? null,
+  };
+}
+
+function pullsPath(owner: string, repo: string): string {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`;
+}
+
+const PULLS_PAGE = 50;
+
+/** The open pull request from branch `head` into `base`, or null. */
+export async function findOpenPull(
+  auth: GiteaAuth,
+  owner: string,
+  repo: string,
+  head: string,
+  base: string,
+): Promise<GiteaPull | null> {
+  for (let page = 1; ; page++) {
+    const pulls = await giteaRequest<PullJson[]>(
+      auth,
+      "GET",
+      `${pullsPath(owner, repo)}?state=open&limit=${PULLS_PAGE}&page=${page}`,
+    );
+    const match = pulls.find((p) => p.head.ref === head && p.base.ref === base);
+    if (match) return toPull(match);
+    if (pulls.length < PULLS_PAGE) return null;
+  }
+}
+
+export async function createPull(
+  auth: GiteaAuth,
+  owner: string,
+  repo: string,
+  input: { head: string; base: string; title: string; body: string },
+): Promise<GiteaPull> {
+  return toPull(await giteaRequest<PullJson>(auth, "POST", pullsPath(owner, repo), input));
+}
+
+export async function getPull(auth: GiteaAuth, owner: string, repo: string, index: number): Promise<GiteaPull> {
+  return toPull(await giteaRequest<PullJson>(auth, "GET", `${pullsPath(owner, repo)}/${index}`));
+}

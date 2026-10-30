@@ -204,6 +204,13 @@
       "when": 1793368736874,
       "tag": "0028_next_ares",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1793370602021,
+      "tag": "0029_pink_white_queen",
+      "breakpoints": true
     }
   ]
 }
