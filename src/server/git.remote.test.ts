@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ const { execBounded } = await import("./exec");
 const { cloneRemote, fetchBranchHead, forgeGitEnv, pushRef } = await import("./git");
 
 const TOKEN = "tok-xyz";
+const FORGE_URL = "https://gitea.example/o/r.git";
 const dirs: string[] = [];
 
 function tmp(prefix: string): string {
@@ -58,6 +59,12 @@ function advanceRemote(bare: string, file: string): string {
   commit(other, file);
   git(other, "push", "-q", "origin", "HEAD:refs/heads/main");
   return git(bare, "rev-parse", "main");
+}
+
+/** `git credential fill` for an https `host`: what git would send there. */
+function fill(env: NodeJS.ProcessEnv, host: string): { status: number | null; out: string } {
+  const res = spawnSync("git", ["credential", "fill"], { input: `protocol=https\nhost=${host}\n\n`, env, encoding: "utf8" });
+  return { status: res.status, out: res.stdout + res.stderr };
 }
 
 afterEach(() => {
@@ -120,13 +127,10 @@ describe("pushRef", () => {
 
 describe("forge credentials", () => {
   it("the credential helper serves the token from the environment", async () => {
-    const filled = execFileSync("git", ["credential", "fill"], {
-      input: "protocol=https\nhost=gitea.example\n\n",
-      env: forgeGitEnv("bot", TOKEN),
-      encoding: "utf8",
-    });
-    expect(filled).toContain("username=bot");
-    expect(filled).toContain(`password=${TOKEN}`);
+    const filled = fill(forgeGitEnv("bot", TOKEN, FORGE_URL), "gitea.example");
+    expect(filled.status).toBe(0);
+    expect(filled.out).toContain("username=bot");
+    expect(filled.out).toContain(`password=${TOKEN}`);
 
     const { bare, clone } = remoteAndClone();
     const ours = commit(clone, "ours.txt");
@@ -150,16 +154,27 @@ describe("forge credentials", () => {
     vi.stubEnv("GIT_CONFIG_VALUE_0", "yes");
     vi.stubEnv("GIT_CONFIG_KEY_1", "credential.helper");
     vi.stubEnv("GIT_CONFIG_VALUE_1", "!f() { echo username=operator; echo password=theirs; }; f");
-    const env = forgeGitEnv("bot", TOKEN);
+    const env = forgeGitEnv("bot", TOKEN, FORGE_URL);
 
     expect(execFileSync("git", ["config", "--get", "radulf.kept"], { env, encoding: "utf8" }).trim()).toBe("yes");
-    const filled = execFileSync("git", ["credential", "fill"], {
-      input: "protocol=https\nhost=gitea.example\n\n",
-      env,
-      encoding: "utf8",
-    });
-    expect(filled).toContain(`password=${TOKEN}`);
-    expect(filled).not.toContain("theirs");
+    const filled = fill(env, "gitea.example");
+    expect(filled.out).toContain(`password=${TOKEN}`);
+    expect(filled.out).not.toContain("theirs");
+  });
+
+  it("the credential helper offers the token to no other host", () => {
+    // Prompts are off and so is askpass, so a host the helper does not serve
+    // has nowhere left to get a password: what a redirect to it would see.
+    const env: NodeJS.ProcessEnv = { ...forgeGitEnv("bot", TOKEN, FORGE_URL), GIT_ASKPASS: "" };
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(fill(env, "gitea.example").out).toContain(`password=${TOKEN}`);
+
+    for (const host of ["elsewhere.example", "gitea.example:8443"]) {
+      const other = fill(env, host);
+      expect(other.status).not.toBe(0);
+      expect(other.out).not.toContain("password=");
+      expect(other.out).not.toContain(TOKEN);
+    }
   });
 
   it("the token never lands in .git/config", async () => {

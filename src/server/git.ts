@@ -649,7 +649,7 @@ export async function cloneRemote(
   cwd: string,
   auth?: { httpsUrl: string; username: string; token: string }
 ): Promise<{ ok: boolean; error?: string }> {
-  const env = auth ? forgeGitEnv(auth.username, auth.token) : remoteEnv();
+  const env = auth ? forgeGitEnv(auth.username, auth.token, auth.httpsUrl) : remoteEnv();
   try {
     await execGit(cwd, ["clone", "--", auth?.httpsUrl ?? url, dest], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env });
     if (auth) await execGit(dest, ["remote", "set-url", "origin", url]);
@@ -724,22 +724,26 @@ const FORGE_CREDENTIAL_HELPER =
 
 /**
  * `remoteEnv()` for one git process that authenticates to a connected forge
- * (spec 33). The token lives only in that process's environment: never on a
- * command line, in `.git/config` or in a remote URL. The empty helper first
- * clears every helper configured before it (gh's, a keychain), so git asks
- * ours alone. Both entries are appended after any `GIT_CONFIG_*` the server
- * inherited, which keep their numbers and still apply: an operator's
- * `http.sslCAInfo` for a private CA has to reach this push like any other.
+ * (spec 33); `url` is what that process fetches from, pushes to or clones.
+ * The token lives only in the process's environment: never on a command
+ * line, in `.git/config` or in a remote URL. The empty helper first clears
+ * every helper configured before it (gh's, a keychain), and ours is then
+ * registered for `url`'s origin alone, so git offers the token to no other
+ * host, a redirect target included. Both entries are appended after any
+ * `GIT_CONFIG_*` the server inherited, which keep their numbers and still
+ * apply: an operator's `http.sslCAInfo` for a private CA has to reach this
+ * push like any other.
  */
-export function forgeGitEnv(username: string, token: string): NodeJS.ProcessEnv {
+export function forgeGitEnv(username: string, token: string, url: string): NodeJS.ProcessEnv {
   const env = remoteEnv();
   const n = Number(env.GIT_CONFIG_COUNT) || 0;
+  const { protocol, host } = new URL(url);
   return {
     ...env,
     GIT_CONFIG_COUNT: String(n + 2),
     [`GIT_CONFIG_KEY_${n}`]: "credential.helper",
     [`GIT_CONFIG_VALUE_${n}`]: "",
-    [`GIT_CONFIG_KEY_${n + 1}`]: "credential.helper",
+    [`GIT_CONFIG_KEY_${n + 1}`]: `credential.${protocol}//${host}.helper`,
     [`GIT_CONFIG_VALUE_${n + 1}`]: FORGE_CREDENTIAL_HELPER,
     RADULF_FORGE_USER: username,
     RADULF_FORGE_TOKEN: token,
@@ -749,7 +753,7 @@ export function forgeGitEnv(username: string, token: string): NodeJS.ProcessEnv 
 /** The remote argument, env and secret to scrub for one target. */
 function remoteOf(target: RemoteTarget): { remote: string; env: NodeJS.ProcessEnv; secret: string } {
   return target.kind === "forge"
-    ? { remote: target.url, env: forgeGitEnv(target.username, target.token), secret: target.token }
+    ? { remote: target.url, env: forgeGitEnv(target.username, target.token, target.url), secret: target.token }
     : { remote: PR_REMOTE, env: remoteEnv(), secret: "" };
 }
 
