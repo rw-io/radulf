@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -479,6 +480,24 @@ describeOnHost("runSandboxedCommand / createSandboxedBashOperations (real sandbo
 
   const sh = (cmd: string) =>
     runSandboxedCommand(cmd, config(), (wrapped) => execFileAsync("/bin/sh", ["-c", wrapped]));
+
+  it.skipIf(process.platform !== "linux")("a sandboxed agent cannot read the token from /proc", async () => {
+    // Spec 33: a host git process holds the forge token in its environment.
+    // Agent bash gets its own PID namespace and a fresh /proc, so no host
+    // process's environ is reachable from inside.
+    const host = spawn("sleep", ["30"], { env: { ...process.env, RADULF_FORGE_TOKEN: "canary-33" }, stdio: "ignore" });
+    try {
+      await once(host, "spawn");
+      expect(fs.readFileSync(`/proc/${host.pid}/environ`, "utf8")).toContain("canary-33");
+
+      const { stdout } = await sh("cat /proc/*/environ 2>/dev/null | tr '\\0' '\\n'");
+      // The sandbox's own processes are readable, so the next check cannot pass on an empty /proc.
+      expect(stdout).toContain("PATH=");
+      expect(stdout).not.toContain("canary-33");
+    } finally {
+      host.kill("SIGKILL");
+    }
+  });
 
   it("allows a worktree write and prevents a host write outside it", async () => {
     await sh(`echo hi > ${worktree}/ok.txt`);

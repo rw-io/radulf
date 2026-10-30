@@ -5,7 +5,9 @@ import { CLONES_DIR } from "@/db";
 import { privateDir } from "@/db/privateFs";
 import { ClientError } from "./clientError";
 import { assertInsideBrowsableRoot } from "./folderBrowser";
+import { matchRemoteUrl } from "./forgeMatch";
 import { assertUsableRepo, cloneRemote, tryGit } from "./git";
+import { forgeTarget } from "./remoteTarget";
 import { assertRepoName } from "./repoInit";
 import { errorMessage } from "@/shared/errorMessage";
 
@@ -18,7 +20,8 @@ const CLONE_URL = /^(https?:\/\/|ssh:\/\/|git@[^\s/:]+:|file:\/\/)\S+$/;
  * Clone `url` into `<data-parent>/repos/<name>` (spec 21) so a repository can
  * be registered without already living on this machine: on a container
  * install that is the difference between a bind mount and none. Runs with the
- * operator's own git credentials, host-side, from the registration path only.
+ * operator's own git credentials, or a connected forge's token (spec 33),
+ * host-side, from the registration path only.
  * Returns what POST /api/repos needs; the caller registers it.
  */
 export async function cloneRepository(
@@ -50,7 +53,12 @@ export async function cloneRepository(
     throw new ClientError(`could not create ${CLONES_DIR}: ${errorMessage(cause)}`);
   }
 
-  const cloned = await cloneRemote(url, target, CLONES_DIR);
+  // Spec 33: a URL on a connected forge clones with the connection's token,
+  // so a host with no SSH key or credential helper can still register it.
+  const forge = await matchRemoteUrl(url);
+  const via = forge && forgeTarget(forge);
+  const auth = via ? { httpsUrl: via.url, username: via.username, token: via.token } : undefined;
+  const cloned = await cloneRemote(url, target, CLONES_DIR, auth);
   if (!cloned.ok) {
     fs.rmSync(target, { recursive: true, force: true });
     throw new ClientError(`git clone failed: ${cloned.error}`);

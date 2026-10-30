@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { db, now, worktrees, WORKTREES_DIR } from "@/db";
 import { ClientError } from "./clientError";
 import { execBounded } from "./exec";
+import { scrubSecret } from "./forgeConnections";
 import { realpathBestEffort } from "./sandbox/pathGuard";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
@@ -637,19 +638,24 @@ function remoteEnv(): NodeJS.ProcessEnv {
  * sandbox keeps blocking clone and fetch inside a run exactly as it blocks
  * push. `dest` must not exist yet; `cwd` is where git runs, since `-C` needs
  * a directory that does.
+ *
+ * With `auth` (spec 33, a URL on a connected forge) the clone goes over the
+ * forge's HTTPS URL with its token instead, and `origin` is then set back to
+ * `url`, so the configured remote is what the operator typed.
  */
 export async function cloneRemote(
   url: string,
   dest: string,
-  cwd: string
+  cwd: string,
+  auth?: { httpsUrl: string; username: string; token: string }
 ): Promise<{ ok: boolean; error?: string }> {
+  const env = auth ? forgeGitEnv(auth.username, auth.token) : remoteEnv();
   try {
-    await execGit(cwd, ["clone", "--", url, dest], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env: remoteEnv() });
+    await execGit(cwd, ["clone", "--", auth?.httpsUrl ?? url, dest], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env });
+    if (auth) await execGit(dest, ["remote", "set-url", "origin", url]);
     return { ok: true };
   } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; message?: string };
-    const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
-    return { ok: false, error: out || err.message || "git clone failed" };
+    return { ok: false, error: scrubSecret(gitFailure(e, "git clone failed"), auth?.token ?? "") };
   }
 }
 
@@ -702,5 +708,99 @@ export async function pushBranch(
     const err = e as { stdout?: string; stderr?: string; message?: string };
     const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
     return { ok: false, error: out || err.message || "git push failed" };
+  }
+}
+
+/** Where a remote operation goes (spec 33): the repo's own `origin` with the
+ * operator's host credentials, or a connected forge's HTTPS URL with its
+ * token. */
+export type RemoteTarget = { kind: "origin" } | { kind: "forge"; url: string; username: string; token: string };
+
+// git runs a `!` helper through the shell with the action appended, so `$1` is
+// get, store or erase. The text names the variables and the shell expands
+// them; printf is a shell builtin, so the token never reaches an argv either.
+const FORGE_CREDENTIAL_HELPER =
+  '!f() { test "$1" = get || return 0; printf "username=%s\\npassword=%s\\n" "$RADULF_FORGE_USER" "$RADULF_FORGE_TOKEN"; }; f';
+
+/**
+ * `remoteEnv()` for one git process that authenticates to a connected forge
+ * (spec 33). The token lives only in that process's environment: never on a
+ * command line, in `.git/config` or in a remote URL. The empty helper first
+ * clears every helper configured before it (gh's, a keychain), so git asks
+ * ours alone. Both entries are appended after any `GIT_CONFIG_*` the server
+ * inherited, which keep their numbers and still apply: an operator's
+ * `http.sslCAInfo` for a private CA has to reach this push like any other.
+ */
+export function forgeGitEnv(username: string, token: string): NodeJS.ProcessEnv {
+  const env = remoteEnv();
+  const n = Number(env.GIT_CONFIG_COUNT) || 0;
+  return {
+    ...env,
+    GIT_CONFIG_COUNT: String(n + 2),
+    [`GIT_CONFIG_KEY_${n}`]: "credential.helper",
+    [`GIT_CONFIG_VALUE_${n}`]: "",
+    [`GIT_CONFIG_KEY_${n + 1}`]: "credential.helper",
+    [`GIT_CONFIG_VALUE_${n + 1}`]: FORGE_CREDENTIAL_HELPER,
+    RADULF_FORGE_USER: username,
+    RADULF_FORGE_TOKEN: token,
+  };
+}
+
+/** The remote argument, env and secret to scrub for one target. */
+function remoteOf(target: RemoteTarget): { remote: string; env: NodeJS.ProcessEnv; secret: string } {
+  return target.kind === "forge"
+    ? { remote: target.url, env: forgeGitEnv(target.username, target.token), secret: target.token }
+    : { remote: PR_REMOTE, env: remoteEnv(), secret: "" };
+}
+
+/** A failed git call's output, or its message when it printed nothing. */
+function gitFailure(e: unknown, fallback: string): string {
+  const err = e as { stdout?: string; stderr?: string; message?: string };
+  const out = ((err.stdout ?? "") + (err.stderr ?? "")).trim();
+  return out || err.message || fallback;
+}
+
+/**
+ * Fetch one branch's remote tip into FETCH_HEAD and return its sha. Writes no
+ * `refs/remotes/*` ref: a fetch from a named remote otherwise also moves its
+ * tracking branch (`--refmap=` turns that off), and a moved tracking ref is
+ * noise in the run-end ref check (spec 19).
+ */
+export async function fetchBranchHead(
+  cwd: string,
+  target: RemoteTarget,
+  branch: string
+): Promise<{ ok: true; sha: string } | { ok: false; error: string; missing: boolean }> {
+  const { remote, env, secret } = remoteOf(target);
+  try {
+    await execGit(cwd, ["fetch", "--no-tags", "--refmap=", "--", remote, `refs/heads/${branch}`], {
+      timeoutMs: GIT_REMOTE_TIMEOUT_MS,
+      env,
+    });
+    return { ok: true, sha: await git(cwd, "rev-parse", "FETCH_HEAD") };
+  } catch (e) {
+    const error = scrubSecret(gitFailure(e, "git fetch failed"), secret);
+    return { ok: false, error, missing: /couldn't find remote ref/.test(error) };
+  }
+}
+
+/**
+ * Push `refspec` to the target. Never forced, the same rule as `pushBranch`:
+ * a leading `+` would force this one ref, so it is refused outright, and a
+ * remote that moved comes back as `rejected` for the caller to reconcile.
+ */
+export async function pushRef(
+  cwd: string,
+  target: RemoteTarget,
+  refspec: string
+): Promise<{ ok: true } | { ok: false; error: string; rejected: boolean }> {
+  if (refspec.startsWith("+")) throw new Error(`pushRef never forces: ${refspec}`);
+  const { remote, env, secret } = remoteOf(target);
+  try {
+    await execGit(cwd, ["push", "--", remote, refspec], { timeoutMs: GIT_REMOTE_TIMEOUT_MS, env });
+    return { ok: true };
+  } catch (e) {
+    const error = scrubSecret(gitFailure(e, "git push failed"), secret);
+    return { ok: false, error, rejected: /\[rejected\]|non-fast-forward|fetch first/.test(error) };
   }
 }
