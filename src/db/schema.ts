@@ -463,6 +463,20 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+// Spec 33: one row per Gitea or Forgejo instance Radulf can deliver to. `token`
+// is settingsCrypto ciphertext and never leaves the server.
+export const forgeConnections = sqliteTable("forge_connections", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull().$type<"gitea" | "forgejo">(),
+  baseUrl: text("base_url").notNull().unique(),
+  token: text("token").notNull(),
+  account: text("account"),
+  checkError: text("check_error"),
+  checkedAt: text("checked_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 // One row per physical worktree directory (not per run — a card's plan/loop/
 // evaluate runs share one worktree across a cycle, see createWorktree's one
 // call site). runId is nullable + set-null on delete so pruneRuntimeHistory
