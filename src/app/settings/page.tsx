@@ -8,6 +8,7 @@ import { ModelBrowser, ModelField, formatPricePerMillion, useProviderModels } fr
 import { ProviderLoginSection } from "./providerLogin";
 import { useConfirm } from "../ui/confirmDialog";
 import { SchedulesSection } from "./schedulesSection";
+import { ForgeConnectionsSection } from "./forgeConnections";
 import { useSettingsData, type PromptTemplateSettings, type Settings } from "./useSettingsData";
 import type { ProviderUsageRow } from "@/server/providerUsage";
 import { PROVIDERS, REASONING_LEVELS, providerLabel, type ProviderModel } from "@/shared/providers";
@@ -434,6 +435,7 @@ export default function SettingsPage() {
                   {textInput("folderBrowserRoot", { label: "Browsable root", placeholder: "$HOME" })}
                 </section>
                 <GithubSection />
+                <ForgeConnectionsSection />
                 <section className={sectionCls}>
                   <SectionHeading title="Jira">
                     Paste an issue link or key into the New task dialog to prefill a card from
