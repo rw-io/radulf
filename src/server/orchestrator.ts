@@ -1869,6 +1869,10 @@ export class Orchestrator {
     // Spec 25 decision 6: deliveries enqueued by a web process (or by this
     // one) wait here for a worker; run every one whose repo lease is free.
     this.reviewService.claimPendingDeliveries();
+    // Spec 33: so do pull requests waiting for CI on Gitea.
+    void this.reviewService
+      .pollPullRequestWaits()
+      .catch((e) => console.error("[radulf] pull request wait poll failed:", e));
   }
 
   /**

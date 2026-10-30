@@ -115,6 +115,10 @@ function toPull(p: PullJson): GiteaPull {
   };
 }
 
+function repoPath(owner: string, repo: string): string {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 function pullsPath(owner: string, repo: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`;
 }
@@ -152,4 +156,72 @@ export async function createPull(
 
 export async function getPull(auth: GiteaAuth, owner: string, repo: string, index: number): Promise<GiteaPull> {
   return toPull(await giteaRequest<PullJson>(auth, "GET", `${pullsPath(owner, repo)}/${index}`));
+}
+
+export type GiteaCombinedStatus = {
+  /** null while the commit has no status at all. */
+  state: "pending" | "success" | "failure" | "error" | null;
+  statuses: Array<{ context: string; state: string; targetUrl: string | null }>;
+};
+
+const COMBINED_STATES = ["pending", "success", "failure", "error"] as const;
+
+/** The combined commit status of `sha`. Any other state Gitea reports (a
+ * `warning`, which it ranks below `pending`, so one can hide a job still
+ * running) reads as `pending`: never a reason to merge. */
+export async function getCombinedStatus(
+  auth: GiteaAuth,
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<GiteaCombinedStatus> {
+  const r = await giteaRequest<{
+    state: string;
+    total_count: number;
+    statuses: Array<{ context: string; status: string; target_url: string | null }> | null;
+  }>(auth, "GET", `${repoPath(owner, repo)}/commits/${encodeURIComponent(sha)}/status`);
+  const state = COMBINED_STATES.find((s) => s === r.state) ?? "pending";
+  return {
+    state: r.total_count === 0 ? null : state,
+    statuses: (r.statuses ?? []).map((s) => ({ context: s.context, state: s.status, targetUrl: s.target_url || null })),
+  };
+}
+
+/**
+ * Merge pull request `index` with a merge commit titled `title`, deleting its
+ * branch afterwards. A refusal comes back as a result: 405 and 409 are the
+ * pull request not being mergeable as it stands (the base moved, Gitea still
+ * checking it, or a rule such as required approvals). A Gitea that did not
+ * answer (no response, or a 5xx) throws, since the merge may or may not have
+ * landed.
+ */
+export async function mergePull(
+  auth: GiteaAuth,
+  owner: string,
+  repo: string,
+  index: number,
+  title: string,
+): Promise<{ ok: true } | { ok: false; notMergeable: boolean; message: string }> {
+  try {
+    await giteaRequest(auth, "POST", `${pullsPath(owner, repo)}/${index}/merge`, {
+      Do: "merge",
+      MergeTitleField: title,
+      delete_branch_after_merge: true,
+    });
+    return { ok: true };
+  } catch (e) {
+    if (!(e instanceof GiteaError) || e.status === null || e.status >= 500) throw e;
+    return { ok: false, notMergeable: e.status === 405 || e.status === 409, message: e.message };
+  }
+}
+
+export async function closePull(auth: GiteaAuth, owner: string, repo: string, index: number): Promise<void> {
+  await giteaRequest(auth, "PATCH", `${pullsPath(owner, repo)}/${index}`, { state: "closed" });
+}
+
+/** Each `/`-separated segment of `branch` is encoded on its own, so a
+ * `ralph/...` branch keeps its slashes as path separators. */
+export async function deleteBranch(auth: GiteaAuth, owner: string, repo: string, branch: string): Promise<void> {
+  const segments = branch.split("/").map(encodeURIComponent).join("/");
+  await giteaRequest(auth, "DELETE", `${repoPath(owner, repo)}/branches/${segments}`);
 }

@@ -129,6 +129,9 @@ export class ReviewService {
       moveCard: this.deps.moveCard,
       decided,
       reloopForConflict: (...a) => this.reloopForConflict(...a),
+      completeApproval: (...a) => this.completeApproval(...a),
+      workerId: () => this.deps.workerId(),
+      pump: () => this.deps.pump(),
     });
   }
 
@@ -258,7 +261,7 @@ export class ReviewService {
     if (!card) throw new ClientError("card not found");
     if (card.status === "abandoned") return;
     const safeStatuses: CardStatus[] = [
-      "backlog", "todo", "ready", "paused", "review", "plan_review", "needs_attention",
+      "backlog", "todo", "ready", "paused", "review", "plan_review", "needs_attention", "awaiting_ci",
     ];
     if (!safeStatuses.includes(card.status)) {
       throw new ClientError(`cannot abandon a card in status ${card.status}`);
@@ -272,6 +275,9 @@ export class ReviewService {
     if (active) throw new ClientError("cannot abandon a card with an active run; cancel it first");
     const repo = getRepo(card.repoId);
     if (!repo) throw new ClientError("repo not found");
+    // Spec 33: a card waiting for CI has its pull request open on Gitea. It
+    // is closed first, so nobody merges work Radulf has stopped watching.
+    if (card.status === "awaiting_ci") await this.gitea.closeForAbandon(cardId);
     if (!this.deps.moveCard(cardId, card.status, "abandoned")) {
       throw new ClientError("card status changed while it was being abandoned");
     }
@@ -511,6 +517,12 @@ export class ReviewService {
         void this.executeDelivery(row).catch((e) => console.error("[radulf] review delivery failed:", e));
       }
     }
+  }
+
+  /** Worker entry point (spec 33): take each pull request waiting for CI on
+   * Gitea one step, merging it once CI passes. */
+  public pollPullRequestWaits(nowMs?: number): Promise<void> {
+    return this.gitea.pollWaits(nowMs);
   }
 
   private async deliver(

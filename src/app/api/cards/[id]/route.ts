@@ -128,6 +128,10 @@ export async function DELETE(_req: Request, { params }: Ctx) {
     const card = requireCard(id);
     if (RUNNING_STATUSES.includes(card.status))
       return err("cannot delete a card with an active run — pull it back to Backlog first");
+    // Spec 33: deleting would drop the wait while its pull request stays open
+    // on Gitea; Abandon closes the pull request.
+    if (card.status === "awaiting_ci")
+      return err("cannot delete a card that is waiting for CI on its pull request; abandon it first", 409);
     // Clean up any leftover worktree before the rows cascade away.
     const runIds = db
       .select({ id: runs.id })

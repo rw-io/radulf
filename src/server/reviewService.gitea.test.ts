@@ -322,6 +322,20 @@ describe("ReviewService: spec 33 Gitea pull request delivery", () => {
     });
   });
 
+  it("losing the claim before the wait starts leaves no wait behind", async () => {
+    seedCard("card-claim-lost");
+    const run = seedRun("card-claim-lost");
+    const deps = makeDeps();
+    const move = deps.moveCard.getMockImplementation()!;
+    deps.moveCard.mockImplementation((cardId, from, to, reason) => to !== "awaiting_ci" && move(cardId, from, to, reason));
+
+    const result = await new ReviewService(deps).approve(run.id);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("review claim was lost");
+    expect(db.select().from(prWaits).all()).toHaveLength(0);
+  });
+
   it("bad token is an unmet precondition", async () => {
     seedCard("card-bad-token");
     const run = seedRun("card-bad-token");
