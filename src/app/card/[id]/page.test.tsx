@@ -70,6 +70,7 @@ let cardJiraKey: string | null = null;
 let cardJiraUrl: string | null = null;
 let cardRepo: Record<string, unknown> | null = null;
 let cardDescription = "";
+let cardPrUrl: string | null = null;
 
 beforeEach(() => {
   cleanup();
@@ -78,6 +79,7 @@ beforeEach(() => {
   cardStatus = "plan_review";
   cardRepo = null;
   cardDescription = "";
+  cardPrUrl = null;
   cardEvents = [];
   cardScoping = [];
   cardChildren = [];
@@ -165,6 +167,7 @@ beforeEach(() => {
             children: cardChildren,
             parent: cardParent,
             jiraUrl: cardJiraUrl,
+            prUrl: cardPrUrl,
             models: {
               planner: { provider: "anthropic", model: "opus", reasoningLevel: "medium" },
               loop: { provider: "anthropic", model: "sonnet", reasoningLevel: "high" },
@@ -415,6 +418,41 @@ describe("CardDetail", () => {
 
     await vi.waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]).toMatchObject({ plannerModel: null, loopModel: null, evaluatorModel: "haiku" });
+  });
+
+  it("says Abandon closes the pull request of a card waiting for CI", async () => {
+    cardStatus = "awaiting_ci";
+    cardPrUrl = "https://gitea.example/o/r/pulls/7";
+    render(<CardDetail />);
+
+    fireEvent.click(await screen.findByText("Abandon task"));
+
+    expect(
+      await screen.findByText(
+        "Its worktree and branch will be deleted. Its pull request will be closed and its remote branch deleted.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("says Abandon, Reset and Delete close a parked card's open pull request, and says nothing of one it lacks", async () => {
+    cardStatus = "needs_attention";
+    cardPrUrl = "https://gitea.example/o/r/pulls/7";
+    render(<CardDetail />);
+    const closes = "Its pull request will be closed and its remote branch deleted.";
+
+    fireEvent.click(await screen.findByText("Reset all progress"));
+    expect(await screen.findByText(`This deletes the branch, worktree and plan, and moves the card back to Backlog. ${closes}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(await screen.findByText("Delete task"));
+    expect(await screen.findByText(`All its history goes with it. ${closes}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    cleanup();
+    cardPrUrl = null;
+    render(<CardDetail />);
+    fireEvent.click(await screen.findByText("Abandon task"));
+    expect(await screen.findByText("Its worktree and branch will be deleted.")).toBeTruthy();
+    expect(screen.queryByText(new RegExp(closes))).toBeNull();
   });
 
   it("renders the description as Markdown and keeps a typed line break", async () => {

@@ -234,6 +234,9 @@ export default function CardDetail() {
   // Content-Disposition, so a download anchor saves the file and leaves the
   // page where it is. Navigating there through the router would instead ask
   // Next to render an attachment as a page.
+  // Spec 33: Abandon, Reset and Delete close a pull request the card still
+  // has open on Gitea, so their confirms say so.
+  const closesPr = detail.prUrl ? " Its pull request will be closed and its remote branch deleted." : "";
   const menuActions: { label: string; when: readonly string[]; danger?: boolean; run?: () => void; href?: string }[] = [
     { label: "Edit task", when: ["backlog", "todo"], run: () => setShowEdit(true) },
     {
@@ -250,8 +253,8 @@ export default function CardDetail() {
         }
       },
     },
-    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review", "awaiting_ci"], run: confirmThen({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }, () => post("abandon")) },
-    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Reset all progress?", body: "This deletes the branch, worktree and plan, and moves the card back to Backlog.", action: "Reset", danger: true }, () => post("reset")) },
+    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review", "awaiting_ci"], run: confirmThen({ title: "Abandon this task?", body: `Its worktree and branch will be deleted.${closesPr}`, action: "Abandon", danger: true }, () => post("abandon")) },
+    { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Reset all progress?", body: `This deletes the branch, worktree and plan, and moves the card back to Backlog.${closesPr}`, action: "Reset", danger: true }, () => post("reset")) },
     {
       label: "Delete task",
       danger: true,
@@ -259,7 +262,7 @@ export default function CardDetail() {
       run: confirmThen(
         isEpic
           ? { title: "Delete this epic?", body: "Its tasks stay, as standalone tasks.", action: "Delete", danger: true }
-          : { title: "Delete this task?", body: "All its history goes with it.", action: "Delete", danger: true },
+          : { title: "Delete this task?", body: `All its history goes with it.${closesPr}`, action: "Delete", danger: true },
         () => action(async () => {
         await api(`/api/cards/${id}`, { method: "DELETE" });
         router.push("/");

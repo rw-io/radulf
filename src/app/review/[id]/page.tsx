@@ -188,7 +188,7 @@ export default function ReviewPage() {
         <h1 tabIndex={-1} className="min-w-0 grow truncate text-lg font-semibold">Review: {detail.card.title}</h1>
         <DetailsMenu detailsClassName="relative" summaryClassName="grid size-11 cursor-pointer list-none place-items-center rounded-lg bg-foreground/[0.06] text-foreground/60" menuClassName="absolute right-0 z-30 mt-2 w-56 rounded-xl border border-foreground/10 bg-surface p-1.5 shadow-xl" ariaLabel="Review options" summary="•••">
           <Link href={`/card/${id}`} className="flex min-h-11 items-center rounded-lg px-3 text-sm hover:bg-foreground/[0.06]">Open task details</Link>
-          <button disabled={busy} onClick={() => void confirmWith({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }).then((ok) => { if (ok) void abandon(); })} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
+          <button disabled={busy} onClick={() => void confirmWith({ title: "Abandon this task?", body: `Its worktree and branch will be deleted.${detail.prUrl ? " Its pull request will be closed and its remote branch deleted." : ""}`, action: "Abandon", danger: true }).then((ok) => { if (ok) void abandon(); })} className="min-h-11 w-full rounded-lg px-3 text-left text-sm text-red-300 hover:bg-red-500/10">Abandon task</button>
         </DetailsMenu>
       </header>
 

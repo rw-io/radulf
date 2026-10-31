@@ -161,6 +161,24 @@ describe("ReviewPage", () => {
     expect(await screen.findByRole("button", { name: "✓ Approve & open pull request" })).toBeTruthy();
   });
 
+  it("says Abandon closes the pull request a card back in review still has open", async () => {
+    answering("/api/cards/c1", {
+      card: { id: "c1", title: "T", status: "review" },
+      plans: [],
+      runs: [{ id: "r2", kind: "loop", status: "completed", iterationsDone: 1, startedAt: "", endedAt: null, iterations: [] }],
+      prUrl: "https://gitea.example/o/r/pulls/7",
+    });
+    render(<ReviewPage />);
+
+    fireEvent.click(await screen.findByText("Abandon task"));
+
+    expect(
+      await screen.findByText(
+        "Its worktree and branch will be deleted. Its pull request will be closed and its remote branch deleted.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows why an abandon failed instead of dropping the rejection", async () => {
     const baseFetch = globalThis.fetch;
     globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {

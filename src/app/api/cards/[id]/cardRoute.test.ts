@@ -12,7 +12,7 @@ setupTestDataDir("radulf-card-route-");
 
 const { db, cards, events, forgeConnections, plans, prWaits, repos, runs, now } = await import("@/db");
 const { saveConnection } = await import("@/server/forgeConnections");
-const { DELETE } = await import("./route");
+const { DELETE, GET } = await import("./route");
 
 function remove(id: string) {
   return DELETE(new Request(`http://localhost/api/cards/${id}`, { method: "DELETE" }), {
@@ -149,5 +149,67 @@ describe("DELETE /api/cards/[id]", () => {
     expect(failure?.cardId).toBeNull();
     expect(failure?.payload).toContain("cannot close");
     expect(failure?.payload).not.toContain("tok-del");
+  });
+
+});
+
+describe("GET /api/cards/[id] prUrl", () => {
+  function waitRow(id: string, status: typeof prWaits.$inferInsert.status, createdAt: string) {
+    db.insert(prWaits)
+      .values({
+        id,
+        cardId: "card-pr",
+        runId: "run-pr",
+        repoId: "repo-1",
+        connectionId: "conn-1",
+        owner: "o",
+        repo: "r",
+        branch: "ralph/x-1",
+        baseBranch: "main",
+        prNumber: 7,
+        prUrl: `https://gitea.example/o/r/pulls/${id}`,
+        headSha: "head-1",
+        status,
+        pushedAt: createdAt,
+        createdAt,
+      })
+      .run();
+  }
+
+  async function prUrlOf(status: typeof cards.$inferInsert.status) {
+    db.update(cards).set({ status }).where(eq(cards.id, "card-pr")).run();
+    const response = await GET(new Request("http://localhost/api/cards/card-pr"), { params: Promise.resolve({ id: "card-pr" }) });
+    return (await response.json()).prUrl;
+  }
+
+  beforeEach(() => {
+    db.insert(cards)
+      .values({ id: "card-pr", repoId: "repo-1", title: "Card", status: "needs_attention", createdAt: now(), updatedAt: now() })
+      .run();
+    db.insert(runs)
+      .values({
+        id: "run-pr",
+        cardId: "card-pr",
+        kind: "loop",
+        status: "completed",
+        worktreePath: "/tmp/radulf-card-route-wt",
+        branch: "ralph/x-1",
+        startedAt: now(),
+        endedAt: now(),
+      })
+      .run();
+  });
+
+  it("names the pull request a parked card still has open, so its confirms can say it closes", async () => {
+    waitRow("1", "timed_out", "2026-10-30T10:00:00.000Z");
+
+    expect(await prUrlOf("needs_attention")).toBe("https://gitea.example/o/r/pulls/1");
+  });
+
+  it("names none once the card's newest wait merged, closed or was abandoned", async () => {
+    waitRow("1", "ci_failed", "2026-10-30T10:00:00.000Z");
+    waitRow("2", "merged", "2026-10-30T11:00:00.000Z");
+
+    expect(await prUrlOf("done")).toBeNull();
   });
 });

@@ -1,13 +1,13 @@
 import fs from "node:fs";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import { db, cards, plans, runs, iterations, reviews, events, prWaits } from "@/db";
+import { asc, desc, eq, inArray } from "drizzle-orm";
+import { db, cards, plans, runs, iterations, reviews, events } from "@/db";
 import { now } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
 import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { getCard, requireCard } from "@/server/cards";
 import { listChildren } from "@/server/epics";
-import { closeOpenPullRequest } from "@/server/giteaDelivery";
+import { closeOpenPullRequest, openPullRequestWait } from "@/server/giteaDelivery";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo, requireRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
@@ -107,11 +107,9 @@ export async function GET(_req: Request, { params }: Ctx) {
     scopingTurn: scopingTurnInFlight(id),
     children: listChildren(id),
     parent: parent ? { id: parent.id, title: parent.title, runMode: parent.runMode } : null,
-    prUrl: db
-      .select({ prUrl: prWaits.prUrl })
-      .from(prWaits)
-      .where(and(eq(prWaits.cardId, id), eq(prWaits.status, "waiting")))
-      .get()?.prUrl ?? null,
+    // Spec 33: the pull request the card may still have open on Gitea,
+    // waiting or parked; Abandon, Reset and Delete close it.
+    prUrl: openPullRequestWait(id)?.prUrl ?? null,
     jiraUrl: card.jiraKey && jiraBase ? `${jiraBase}/browse/${encodeURIComponent(card.jiraKey)}` : null,
   });
 }
