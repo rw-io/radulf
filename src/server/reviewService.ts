@@ -32,7 +32,7 @@ import { planStatePath } from "./bookkeeping";
 import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { getRepo, pushAfterMergeFor } from "./repos";
-import { matchRepo } from "./forgeMatch";
+import { matchRepo, type ForgeRepoRef } from "./forgeMatch";
 import { GiteaDelivery } from "./giteaDelivery";
 import { resolveRemoteTarget } from "./remoteTarget";
 import { acquireRepoLease, releaseRepoLease } from "./repoLeases";
@@ -563,8 +563,17 @@ export class ReviewService {
     ) {
       // Spec 33 decision 5: a repository on a connected Gitea or Forgejo
       // instance gets its pull request there, merged by Radulf once CI
-      // passes. Any other keeps spec 15's GitHub path.
-      const forge = await matchRepo(repo.path);
+      // passes. Any other keeps spec 15's GitHub path. A lookup that cannot
+      // say which parks the card: a Gitea repository must not reach gh.
+      let forge: ForgeRepoRef | null;
+      try {
+        forge = await matchRepo(repo.path);
+      } catch (e) {
+        const reason = errorMessage(e);
+        this.deps.moveCard(card.id, "reviewing", "needs_attention", reason);
+        decided(card.id, runId, { prFailed: reason });
+        return { ok: false, error: reason };
+      }
       if (forge) return this.gitea.deliver(card, run, repo, baseBranch, expectedStatus, approvedBy, forge);
       return this.deliverPullRequest(card, run, repo, baseBranch, expectedStatus, approvedBy);
     }

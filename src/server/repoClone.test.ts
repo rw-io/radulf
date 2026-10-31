@@ -23,6 +23,7 @@ const { cloneRepository } = await import("./repoClone");
 const { matchRemoteUrl } = await import("./forgeMatch");
 const { cloneRemote } = await import("./git");
 const { saveConnection } = await import("./forgeConnections");
+const { ClientError } = await import("./clientError");
 
 // The scratch repos live under the OS temp dir, so that is the browsable root.
 const ROOT = os.tmpdir();
@@ -108,5 +109,18 @@ describe("cloneRepository", () => {
 
     await cloneRepository(`file://${source}`, "unmatched", ROOT);
     expect(vi.mocked(cloneRemote).mock.calls[1][3]).toBeUndefined();
+  });
+
+  it("refuses the clone, naming the host, when the forge lookup cannot be decided", async () => {
+    vi.mocked(matchRemoteUrl).mockRejectedValueOnce(
+      new Error("cannot match the repository to a connection: could not look up o/r on gitea.example: fetch failed"),
+    );
+
+    const failure = await cloneRepository("git@ssh.gitea.example:o/r.git", "lookup-failed", ROOT).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(ClientError);
+    expect((failure as Error).message).toContain("gitea.example");
+    expect(cloneRemote).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(CLONES_DIR, "lookup-failed"))).toBe(false);
   });
 });

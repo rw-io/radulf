@@ -85,6 +85,60 @@ describe("matchRemoteUrl", () => {
     expect(await fm.matchRemoteUrl("git@other.example:o/r.git")).toBeNull();
   });
 
+  const ARGO = {
+    ssh_url: "git@ssh.gitea.chilleh.ca:homelab/argo.git",
+    clone_url: "https://gitea.chilleh.ca/homelab/argo.git",
+    html_url: "https://gitea.chilleh.ca/homelab/argo",
+  };
+  const SSH_REMOTE = "git@ssh.gitea.chilleh.ca:homelab/argo.git";
+
+  it("a lookup that throws is not cached, and the next call matches once the api answers", async () => {
+    stubFetch(user);
+    await fc.saveConnection({ kind: "gitea", baseUrl: "https://gitea.chilleh.ca", token: "tok-abc" });
+    stubFetch(() => {
+      throw new TypeError("fetch failed");
+    });
+
+    const failure = await fm.matchRemoteUrl(SSH_REMOTE).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("gitea.chilleh.ca");
+    expect((failure as Error).message).toContain("fetch failed");
+    stubFetch(() => new Response(JSON.stringify(ARGO)));
+    expect((await fm.matchRemoteUrl(SSH_REMOTE))?.cloneUrl).toBe(ARGO.clone_url);
+  });
+
+  it("a revoked token is a failed lookup, never a no, and the error carries no token", async () => {
+    stubFetch(user);
+    await fc.saveConnection({ kind: "gitea", baseUrl: "https://gitea.chilleh.ca", token: "s3cret-tok" });
+    stubFetch(() => new Response(JSON.stringify({ message: "token s3cret-tok is revoked" }), { status: 401 }));
+
+    const failure = await fm.matchRemoteUrl(SSH_REMOTE).catch((e: unknown) => e);
+
+    expect((failure as Error).message).toContain("gitea.chilleh.ca");
+    expect((failure as Error).message).toContain("is revoked");
+    expect((failure as Error).message).not.toContain("s3cret-tok");
+  });
+
+  it("the last positive match survives a later failed lookup", async () => {
+    await connect("https://gitea.chilleh.ca");
+    stubFetch(() => new Response(JSON.stringify(ARGO)));
+    const first = await fm.matchRemoteUrl(SSH_REMOTE);
+    expect(first?.cloneUrl).toBe(ARGO.clone_url);
+    // A second connection changes the cache key, so the next call looks again.
+    stubFetch(user);
+    await fc.saveConnection({ kind: "gitea", baseUrl: "https://second.example", token: "t" });
+    stubFetch((url) => {
+      if (url.startsWith("https://gitea.chilleh.ca/")) throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
+    });
+
+    const again = await fm.matchRemoteUrl(SSH_REMOTE);
+
+    expect(again?.cloneUrl).toBe(ARGO.clone_url);
+    expect(again?.connection.id).toBe(first?.connection.id);
+  });
+
   it("caches until connections change", async () => {
     await connect("https://gitea.example");
     const m = stubFetch(() => new Response(JSON.stringify({ message: "nope" }), { status: 404 }));

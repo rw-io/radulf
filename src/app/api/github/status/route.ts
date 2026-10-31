@@ -3,6 +3,7 @@ import { getRepo } from "@/server/repos";
 import { githubStatus } from "@/server/github";
 import { matchRepo } from "@/server/forgeMatch";
 import { checkConnection } from "@/server/forgeConnections";
+import { errorMessage } from "@/shared/errorMessage";
 import { json, handle } from "../../_lib";
 
 /**
@@ -24,8 +25,14 @@ export async function GET(req: Request) {
     // half a minute would make the indicator look broken.
     // Spec 33: a repo whose origin belongs to a saved Gitea/Forgejo connection
     // delivers through that connection, so gh's state is beside the point.
+    // A lookup that cannot say whether it does is a forge problem too.
     const repo = repoId ? getRepo(repoId) : undefined;
-    const matched = repo ? await matchRepo(repo.path) : null;
+    let matched: Awaited<ReturnType<typeof matchRepo>> = null;
+    try {
+      matched = repo ? await matchRepo(repo.path) : null;
+    } catch (e) {
+      return json({ ok: false, account: null, reason: "forge", detail: errorMessage(e), hasRemote: true, forge: "gitea" });
+    }
     if (repo && matched) {
       const connection = await checkConnection(matched.connection.id, { refresh: params.get("refresh") === "1" });
       const ok = connection.checkError === null;

@@ -123,10 +123,11 @@ export async function checkConnection(
   } catch (e) {
     patch = { account: current.account, checkError: scrubSecret(errorMessage(e), auth.token) };
   }
-  const stamp = now();
+  // `updatedAt` changes only when the connection is saved: forgeMatch keys
+  // its cache on it, and a check is not a change to the token or the URL.
   const row = db
     .update(forgeConnections)
-    .set({ ...patch, checkedAt: stamp, updatedAt: stamp })
+    .set({ ...patch, checkedAt: now() })
     .where(eq(forgeConnections.id, id))
     .returning()
     .get();

@@ -433,6 +433,31 @@ describe("ReviewService: spec 33 Gitea pull request delivery", () => {
     expect(db.select().from(prWaits).all()).toHaveLength(0);
   });
 
+  it("a match that cannot be decided parks the card and never takes the gh path", async () => {
+    seedCard("card-lookup-failed");
+    const run = seedRun("card-lookup-failed");
+    mocks.matchRepo.mockRejectedValue(
+      new Error("cannot match the repository to a connection: could not look up o/r on gitea.example: fetch failed"),
+    );
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).approve(run.id);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("gitea.example");
+    expect(statusOf("card-lookup-failed")).toBe("needs_attention");
+    expect(lastReason(deps)).toContain("could not look up o/r on gitea.example");
+    expect(mocks.githubStatus).not.toHaveBeenCalled();
+    expect(mocks.pushBranch).not.toHaveBeenCalled();
+    expect(mocks.createPullRequest).not.toHaveBeenCalled();
+    expect(mocks.findOpenPullRequest).not.toHaveBeenCalled();
+    expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    expect(mocks.pushRef).not.toHaveBeenCalled();
+    expect(eventPayload("card-lookup-failed", "review.decided")).toMatchObject({
+      prFailed: expect.stringContaining("gitea.example"),
+    });
+  });
+
   it("unmatched repo keeps the gh path", async () => {
     seedCard("card-github");
     const run = seedRun("card-github");

@@ -75,6 +75,26 @@ describe("forgeConnections", () => {
     expect(fc.scrubSecret("keep", "")).toBe("keep");
   });
 
+  it("checkConnection records the check but leaves updatedAt alone", async () => {
+    stubFetch();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-30T10:00:00.000Z"));
+      const saved = await fc.saveConnection({ kind: "gitea", baseUrl: "https://gitea.example", token: "tok-abc" });
+      vi.setSystemTime(new Date("2026-10-30T11:00:00.000Z"));
+      stubFetch(401, { message: "token revoked" });
+
+      const checked = await fc.checkConnection(saved.id, { refresh: true });
+
+      expect(checked.updatedAt).toBe(saved.updatedAt);
+      expect(checked.checkedAt).toBe("2026-10-30T11:00:00.000Z");
+      expect(checked.checkError).toContain("token revoked");
+      expect(fc.listConnections()[0].updatedAt).toBe(saved.updatedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("checkConnection caches for 30s", async () => {
     const m = stubFetch();
     const c = await fc.saveConnection({ kind: "gitea", baseUrl: "https://gitea.example", token: "t" });

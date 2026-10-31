@@ -55,7 +55,12 @@ export async function cloneRepository(
 
   // Spec 33: a URL on a connected forge clones with the connection's token,
   // so a host with no SSH key or credential helper can still register it.
-  const forge = await matchRemoteUrl(url);
+  let forge: Awaited<ReturnType<typeof matchRemoteUrl>>;
+  try {
+    forge = await matchRemoteUrl(url);
+  } catch (cause) {
+    throw new ClientError(errorMessage(cause));
+  }
   const via = forge && forgeTarget(forge);
   const auth = via ? { httpsUrl: via.url, username: via.username, token: via.token } : undefined;
   const cloned = await cloneRemote(url, target, CLONES_DIR, auth);

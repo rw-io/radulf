@@ -61,6 +61,19 @@ describe("GET /api/github/status", () => {
     expect(body.detail).toContain("401");
   });
 
+  it("status route reports a lookup that could not be decided as a forge problem", async () => {
+    mocks.matchRepo.mockRejectedValue(
+      new Error("cannot match the repository to a connection: could not look up o/r on gitea.example: fetch failed"),
+    );
+
+    const body = await (await get()).json();
+
+    expect(body).toMatchObject({ ok: false, reason: "forge", hasRemote: true });
+    expect(body.detail).toContain("gitea.example");
+    expect(body.detail).toContain("fetch failed");
+    expect(mocks.githubStatus).not.toHaveBeenCalled();
+  });
+
   it("falls back to the gh status for an unmatched repo and for no repo", async () => {
     mocks.matchRepo.mockResolvedValue(null);
 
