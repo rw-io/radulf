@@ -100,12 +100,14 @@ would move that boundary onto a remote. What changed is not the boundary but
 where it sits — the push happens *after* the same approval that authorizes a
 merge, so the pull request is a delivery format, not a way for work to arrive
 unvetted. It requires the GitHub CLI, already logged in; Radulf has no GitHub
-login of its own. And Radulf never merges the pull request it opens — that is
+login of its own. And Radulf never merges a GitHub pull request it opens; that is
 still a person's decision, on GitHub.
 
-Nothing else about GitHub is integrated: no issue sync, no reading review
-comments back into a card, no other forge. And it does not merge anything on its
-own, ever, without you saying so.
+Gitea and Forgejo are different: with a token entered in Settings, Radulf
+opens the pull request, waits for CI, and merges it itself, but only after you
+approved the diff. Nothing else about forges is integrated: no issue sync, no
+reading review comments back into a card, no GitLab. And it does not merge
+anything on its own without your approval.
 
 ## Where to go next
 

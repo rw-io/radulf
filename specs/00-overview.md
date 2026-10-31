@@ -81,7 +81,13 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    delivery target, per card or workspace-wide — push the branch to `origin`
    and open a pull request *instead of* merging locally. In-app review remains
    where the diff is judged; only what approval writes to changes. Radulf never
-   merges the pull request it opens, so decision 8 is untouched.
+   merges the pull request it opens, so decision 8 is untouched. Amended
+   2026-10-30 by [33-gitea-delivery-and-push-after-merge.md](33-gitea-delivery-and-push-after-merge.md):
+   approval on a Gitea or Forgejo repository delivers by pull request, and
+   Radulf merges that pull request itself once its CI passes (or after a short
+   grace window when there is no CI); a CI failure goes back into the loop as a
+   fix. A local merge is pushed to `origin` afterwards unless the repository
+   turns that off. GitHub delivery is as spec 15 left it.
 7. **Permissions** — the classic Ralph skip-permissions posture. Re-amended
    2026-07-17 by [13-single-pi-sdk-harness.md](13-single-pi-sdk-harness.md): pi
    has no permission system, so the posture is structural — worktree cwd +
@@ -101,7 +107,11 @@ These were decided with the user on 2026-07-10; change only with explicit sign-o
    itself.
 8. **Autonomy** — self-improvement is user-initiated (no cron in v1): the
    user queues cards, including cards against Radulf's own repo, and
-   **merging always requires human approval**.
+   **merging always requires human approval**. Amended 2026-10-30 by
+   [33-gitea-delivery-and-push-after-merge.md](33-gitea-delivery-and-push-after-merge.md):
+   a merge Radulf performs on its own pull request follows the same approval as
+   a local merge; the person approves the diff, and Radulf merges it only after
+   that approval and a passing CI.
 9. **Workflow** — tasks retain the states **Backlog → Todo → In Progress → In Review →
    Needs Attention → Done**, and the orchestrator moves them automatically as
    it works. Amended 2026-07-12 by [10-mobile-first-ui.md](10-mobile-first-ui.md):

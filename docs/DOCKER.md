@@ -138,8 +138,13 @@ into `repos/` on the state volume and registers it. No mount, no restart. The
 name comes from the URL, the default branch from the remote, and because the
 clone has an `origin`, pull-request delivery is available for it straight away.
 
-Private repositories need the container user's own git credentials, which
-never reach agent bash. For HTTPS, log `gh` in once and let it act as git's
+Private repositories need credentials that never reach agent bash. For a
+Gitea or Forgejo host, add a connection (kind, base URL, token) under
+**Settings → Repositories → Gitea and Forgejo connections**. Nothing is
+configured on the server: no `gh auth setup-git` and no SSH key are needed for
+those repositories, and the token is used over HTTPS even for an SSH clone
+address. For any other host, use the container user's own git credentials. For
+HTTPS, log `gh` in once and let it act as git's
 credential helper:
 
 ```bash
@@ -217,8 +222,9 @@ reachable from the container as `http://host.docker.internal:<port>`, not as
 
 ## GitHub pull requests
 
-Delivering an approved diff as a pull request shells out to `gh`, which must be
-authenticated inside the container. Two ways, both invisible to agent bash
+Delivering an approved diff as a GitHub pull request shells out to `gh`, which
+must be authenticated inside the container. Gitea and Forgejo delivery does not
+use `gh`; it uses the connection token set in Settings. Two ways, both invisible to agent bash
 because its environment is an allowlist:
 
 - **A token.** Add `GH_TOKEN=...` to `.env.local`. Nothing is written to disk.
@@ -352,7 +358,7 @@ trade. It removes the layer that actually contains the agent.
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| `git clone failed: ... could not read Username` or `Permission denied (publickey)` | The container has no credential for that remote. See [Repositories](#repositories). |
+| `git clone failed: ... could not read Username` or `Permission denied (publickey)` | The container has no credential for that remote. For Gitea or Forgejo, add a connection in Settings; otherwise see [Repositories](#repositories). |
 | `worker` log says `sandbox preflight failed` with a `bwrap` error | One of the three `security_opt` entries on the `worker` service is not in effect. Run `docker compose config` and check they render. Each missing one has its own message: `No permissions to create new namespace` is seccomp, `Failed to make / slave` is AppArmor, `Can't mount proc on /newroot/proc` is the masked system paths. |
 | `fatal: detected dubious ownership in repository` | The repository is not owned by uid 1000. See [Repositories](#repositories). |
 | Login page never accepts the password | The hash in `.env.local` was not single-quoted and compose expanded its `$` segments. |

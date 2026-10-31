@@ -42,7 +42,7 @@ The user's job shrinks to three verbs: describe the work, prioritize the queue, 
 **Environment:**
 
 - The host is Debian Linux. The sandbox is bubblewrap plus a seccomp filter. Upstream treats Linux as best-effort and macOS as primary; here Linux is the real platform and platform copy must not assume a Mac.
-- The day-to-day forge is GitLab at gitlab.mercury.iren.ca. Gitea and Forgejo are also valid delivery targets for IREN. The code only speaks GitHub today, for the provenance link in the rail and for pull-request delivery.
+- The day-to-day forge is GitLab at gitlab.mercury.iren.ca. Gitea and Forgejo are also valid delivery targets for IREN, and are built (spec 33). GitLab is designed for but not built; the code speaks GitHub, Gitea and Forgejo.
 - Jira is iren.atlassian.net. Radulf reads issues into card drafts, and writes only the opt-in Done comment on the issue a finished card came from (**Comment on Jira when a card is done** under Settings → Repositories → Jira, off by default).
 - The user works the queue from a desktop browser and from a phone.
 - Guides live in the in-app Docs tab. The `specs/` directory is a dated decision log and is never rewritten to match the present.
@@ -55,9 +55,9 @@ The user's job shrinks to three verbs: describe the work, prioritize the queue, 
 
 **Automation.** Auto Mode claims the next queued task when a slot frees. Improvement Runs propose, drive, and auto-approve cards onto one accumulating branch until a time budget is spent, with a Stop that lets the task in flight finish. There is no unattended scheduling, by design.
 
-**Delivery.** Approve merges the branch locally into the card's base branch, or delivers it as a GitHub pull request per spec 15. GitLab, Gitea, and Forgejo delivery are wanted and undecided.
+**Delivery.** Approve merges the branch locally into the card's base branch, or delivers it as a GitHub pull request per spec 15. On a Gitea or Forgejo repository, approval opens a pull request that Radulf merges itself once CI passes, and a local merge is pushed to `origin` (spec 33). GitLab delivery is designed for, not built.
 
-**Integrations.** Jira issue import into a new task, with the issue's child issues as the tasks of an epic, read-only. GitHub status and pull-request delivery. A folder browser that can register an existing repo or create a fresh one.
+**Integrations.** Jira issue import into a new task, with the issue's child issues as the tasks of an epic, read-only. GitHub status and pull-request delivery, and Gitea and Forgejo pull-request delivery with CI wait and merge. A folder browser that can register an existing repo or create a fresh one.
 
 **Concurrency.** More than one card per repo can run at once under a per-repo cap. Local-model runs remain serial because the model owns the machine's memory.
 

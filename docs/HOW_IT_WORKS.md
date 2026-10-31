@@ -139,6 +139,9 @@ the local base branch. Turn on **Open pull requests** — per card in the New Ta
 dialog, or workspace-wide from the Work page's `•••` menu — and approving
 instead pushes the branch to `origin` and opens a pull request against the base,
 leaving the local base branch untouched. It is one or the other, never both.
+That is how delivery works for a GitHub repository. A repository with a Gitea
+or Forgejo connection is delivered differently, described under
+[Gitea and Forgejo](#gitea-and-forgejo) below.
 
 This needs the GitHub CLI (`gh`) installed and already authenticated: run
 `gh auth login` in your terminal. Provider logins moved into Settings (spec
@@ -147,8 +150,38 @@ login has no interface to drive, only output to read. The option is unavailable,
 `gh` is logged out, or the repo has no `origin`. Before pushing, Radulf merges
 the base branch in (a conflict goes back to the loop exactly as it would for a
 local merge) and strips `.ralph/`, so the pull request contains what you
-reviewed and not the loop's own working notes. Radulf never merges the pull
-request it opens.
+reviewed and not the loop's own working notes. For GitHub, Radulf never merges
+the pull request it opens.
+
+**Push after merge.** When approval merges locally, Radulf then pushes the base
+branch to `origin`, so an approved card does not stay stranded on the server.
+It fetches the remote base first and fast-forwards, or merges it in, stopping
+on a conflict. It never force-pushes, never pushes tags, and refuses to
+overwrite ignored files. If the push fails, the card goes to Needs Attention
+and **Retry merge** pushes it. The **Push after merge** toggle under
+**Settings → Repositories** is per repository: on by default for repositories
+Radulf cloned, off for ones registered by local path.
+
+### Gitea and Forgejo
+
+Under **Settings → Repositories → Gitea and Forgejo connections**, add a
+connection with its kind, base URL and a token. The token is checked when you
+save it and is never shown again. A repository whose `origin` is on that host
+uses the token over HTTPS for clone, fetch, push, and for opening, reading and
+merging the pull request, even when `origin` is an SSH address. The token is
+offered only to that connection's own host and never reaches agent bash.
+
+Approving a card on such a repository opens the pull request (or reuses the
+one already open) and parks the card in **Waiting for CI**. Once CI passes, or
+after a 2 minute grace window when the repository has no CI, Radulf merges
+with a merge commit, merging only the exact commit CI verified, deletes the
+branch, and marks the card Done. CI that has not finished 2 hours after the
+latest push sends the card to Needs Attention. A CI failure goes back into the
+loop as a fix task, without re-planning or plan approval, and the fix is
+approved like any other change. After 2 CI round-trips, a third failure goes
+to Needs Attention. While the card waits, only **Abandon** is offered, and it
+closes the pull request and deletes the branch. Auto-approved cards open
+ready pull requests here, not drafts. Spec 33 records the decisions.
 
 **Skipping step 4.** Auto-approve makes an evaluator `approve` merge straight
 through, with no human in the path. It can be granted two ways: per card, from
@@ -162,8 +195,8 @@ point and stay there waiting for you. Two things are never skipped: a
 evaluator's revision limit is always escalated to you. Pre-merge repo-integrity
 and merge-conflict checks run either way.
 
-If auto-approve and pull-request delivery are both on, the pull request is opened
-as a **draft** — nobody looked at the diff, and the draft says so. A pull request
+If auto-approve and pull-request delivery are both on for a GitHub repository,
+the pull request is opened as a **draft**: nobody looked at the diff, and the draft says so. A pull request
 Radulf opens as ready-for-review is one a human approved.
 
 **YOLO mode.** For leaving the queue to run overnight, the **YOLO mode** toggle

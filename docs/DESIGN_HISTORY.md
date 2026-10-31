@@ -68,7 +68,7 @@ history inline.
 | [30: A plan critic between planning and the loop](../specs/30-plan-critic.md) | A read-only critic run that reviews each plan against the card, the thread and the specs before the loop starts, approving or sending it back to the planner with feedback, at most twice | Current; extends 04's roles and 17; revision cap shared with 31; decision 2 amended by 32 |
 | [31: Probe acceptance checks against the untouched worktree](../specs/31-acceptance-precheck.md) | Running a plan's check commands before the loop starts, sending back once a plan whose new-behavior checks already pass, and never spending a repair iteration on such a check after DONE | Current; extends 18 item 7 and 30; decision 3 amended by 32 |
 | [32: Revise the plan in place](../specs/32-revise-the-plan-in-place.md) | Handing the planner its previous plan when the critic or the pre-check sends it back, so a revision edits the plan instead of re-planning from nothing | Current; amends 30 decision 2 and 31 decision 3 |
-| [33: Gitea delivery, and pushing every approved merge](../specs/33-gitea-delivery-and-push-after-merge.md) | A Gitea or Forgejo token entered in Settings for clone, push and pull requests, a pull request Radulf merges once its CI passes, and a push after every local merge | Decided, not yet built; amends decision 6, 15 and 21 |
+| [33: Gitea delivery, and pushing every approved merge](../specs/33-gitea-delivery-and-push-after-merge.md) | A Gitea or Forgejo token entered in Settings for clone, push and pull requests, a pull request Radulf merges once its CI passes, and a push after every local merge | Current; amends decision 6, 15 and 21 |
 
 ## Implementation plans
 
