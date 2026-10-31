@@ -67,6 +67,8 @@ function statusMark(card: BoardCard): { mark: string; detail: string; tone: stri
       return { mark: "◆", detail: "Diff ready", tone: "text-violet-300" };
     case "reviewing":
       return { mark: "◌", detail: "Finalizing the decision", tone: "text-violet-300" };
+    case "awaiting_ci":
+      return { mark: "◌", detail: "Waiting for CI", tone: "text-violet-300" };
     case "needs_attention":
       return { mark: "!", detail: card.latestRun?.exitReason || "Run needs a decision", tone: "text-red-300" };
     case "done":
@@ -636,6 +638,7 @@ function TaskRow({ card, position, repos, onStart, onQueue, onAction, onConfirm,
           <p className="mt-0.5 truncate text-xs text-foreground/40">Latest activity: {card.latestRun?.exitReason || "The loop is working through the current iteration"}</p>
         ))}
         {card.status === "paused" && <p className="mt-0.5 truncate text-xs text-foreground/40">Paused after iteration {card.latestRun?.iterationsDone ?? 0} · {card.latestRun?.exitReason || "Waiting to resume"}</p>}
+        {card.prUrl && <p className="mt-0.5 truncate text-xs"><a href={card.prUrl} target="_blank" rel="noreferrer" className="text-accent underline">View pull request</a></p>}
         {card.status === "needs_attention" && state.detail.length > 70 && <p className="mt-0.5 line-clamp-2 text-xs text-red-200/60">{state.detail}</p>}
         {(onMove || card.status !== "todo") && (
           <div className="mt-1 flex min-h-11 items-center gap-1">

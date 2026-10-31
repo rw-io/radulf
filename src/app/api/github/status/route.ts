@@ -1,6 +1,8 @@
 import { hasRemote } from "@/server/git";
 import { getRepo } from "@/server/repos";
 import { githubStatus } from "@/server/github";
+import { matchRepo } from "@/server/forgeMatch";
+import { checkConnection } from "@/server/forgeConnections";
 import { json, handle } from "../../_lib";
 
 /**
@@ -20,10 +22,25 @@ export async function GET(req: Request) {
     // `refresh=1` bypasses the 30s cache: the operator fixes auth in a terminal
     // and comes straight back, and being told "still logged out" for another
     // half a minute would make the indicator look broken.
+    // Spec 33: a repo whose origin belongs to a saved Gitea/Forgejo connection
+    // delivers through that connection, so gh's state is beside the point.
+    const repo = repoId ? getRepo(repoId) : undefined;
+    const matched = repo ? await matchRepo(repo.path) : null;
+    if (repo && matched) {
+      const connection = await checkConnection(matched.connection.id, { refresh: params.get("refresh") === "1" });
+      const ok = connection.checkError === null;
+      return json({
+        ok,
+        account: connection.account,
+        reason: ok ? null : "forge",
+        detail: ok ? null : `${new URL(connection.baseUrl).host}: ${connection.checkError}`,
+        hasRemote: true,
+        forge: "gitea",
+      });
+    }
     const gh = await githubStatus({ refresh: params.get("refresh") === "1" });
     let remote: boolean | null = null;
     if (repoId) {
-      const repo = getRepo(repoId);
       remote = repo ? await hasRemote(repo.path) : false;
     }
     return json({
@@ -32,6 +49,7 @@ export async function GET(req: Request) {
       reason: gh.ok ? null : gh.reason,
       detail: gh.ok ? null : gh.detail,
       hasRemote: remote,
+      forge: "github",
     });
   });
 }

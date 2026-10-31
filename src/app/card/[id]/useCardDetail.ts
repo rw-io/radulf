@@ -76,6 +76,8 @@ export type CardDetailData = {
     /** The Jira issue this card mirrors, if it was created from one. */
     jiraKey?: string | null;
   };
+  /** Spec 33: the pull request the card is waiting on. Absent on older cached responses. */
+  prUrl?: string | null;
   repo: { id: string; name: string; path: string; defaultBranch: string } | null;
   plans: Plan[];
   /** The latest plan's orchestrator-private checklist as it stands now, with

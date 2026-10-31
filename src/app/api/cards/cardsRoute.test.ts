@@ -12,7 +12,7 @@ vi.mock("@/server/orchestrator", () => ({
 
 setupTestDataDir("radulf-cards-route-");
 
-const { db, cards, repos, runs, now } = await import("@/db");
+const { db, cards, repos, runs, prWaits, now } = await import("@/db");
 const { planStatePath } = await import("@/server/bookkeeping");
 const { GET, POST } = await import("./route");
 
@@ -121,5 +121,55 @@ describe("GET /api/cards", () => {
       left: 2,
       text: "Wire the board badge",
     });
+  });
+  it("cards route includes the pr url while waiting", async () => {
+    for (const id of ["card-w", "card-n"]) {
+      db.insert(cards)
+        .values({
+          id,
+          repoId: "repo-1",
+          title: id,
+          status: id === "card-w" ? "awaiting_ci" : "backlog",
+          createdAt: now(),
+          updatedAt: now(),
+        })
+        .run();
+    }
+    db.insert(runs)
+      .values({
+        id: "run-w",
+        cardId: "card-w",
+        kind: "evaluate",
+        status: "completed",
+        branch: "ralph/card-w",
+        worktreePath: "/tmp/wt",
+        startedAt: now(),
+      })
+      .run();
+    db.insert(prWaits)
+      .values({
+        id: "wait-1",
+        cardId: "card-w",
+        runId: "run-w",
+        repoId: "repo-1",
+        connectionId: "conn-1",
+        owner: "o",
+        repo: "r",
+        branch: "ralph/card-w",
+        baseBranch: "main",
+        prNumber: 7,
+        prUrl: "https://gitea.example/o/r/pulls/7",
+        headSha: "abc",
+        status: "waiting",
+        pushedAt: now(),
+        createdAt: now(),
+      })
+      .run();
+
+    const list = await (await GET()).json();
+    const byId = Object.fromEntries(list.map((c: { id: string; prUrl: string | null }) => [c.id, c.prUrl]));
+
+    expect(byId["card-w"]).toBe("https://gitea.example/o/r/pulls/7");
+    expect(byId["card-n"]).toBeNull();
   });
 });

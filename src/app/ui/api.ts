@@ -24,6 +24,8 @@ export type BoardCard = {
   parentCardId: string | null;
   runMode: EpicRunMode | null;
   dependsOn: string[] | null;
+  /** Spec 33: the pull request a card is waiting on, else null. */
+  prUrl: string | null;
   latestRun: {
     id: string;
     kind: "plan" | "loop" | "evaluate" | "critique";

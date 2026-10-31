@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import { asc, desc, eq, inArray } from "drizzle-orm";
-import { db, cards, plans, runs, iterations, reviews, events } from "@/db";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { db, cards, plans, runs, iterations, reviews, events, prWaits } from "@/db";
 import { now } from "@/db";
 import { planStatePath } from "@/server/bookkeeping";
 import { parseChecklist } from "@/server/checklist";
@@ -106,6 +106,11 @@ export async function GET(_req: Request, { params }: Ctx) {
     scopingTurn: scopingTurnInFlight(id),
     children: listChildren(id),
     parent: parent ? { id: parent.id, title: parent.title, runMode: parent.runMode } : null,
+    prUrl: db
+      .select({ prUrl: prWaits.prUrl })
+      .from(prWaits)
+      .where(and(eq(prWaits.cardId, id), eq(prWaits.status, "waiting")))
+      .get()?.prUrl ?? null,
     jiraUrl: card.jiraKey && jiraBase ? `${jiraBase}/browse/${encodeURIComponent(card.jiraKey)}` : null,
   });
 }

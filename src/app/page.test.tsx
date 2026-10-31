@@ -62,6 +62,7 @@ function card(overrides: Partial<BoardCard> = {}): BoardCard {
     parentCardId: null,
     runMode: null,
     dependsOn: null,
+    prUrl: null,
     latestRun: {
       id: "r1",
       kind: "loop",

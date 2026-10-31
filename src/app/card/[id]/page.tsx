@@ -250,7 +250,7 @@ export default function CardDetail() {
         }
       },
     },
-    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }, () => post("abandon")) },
+    { label: "Abandon task", danger: true, when: ["needs_attention", "review", "plan_review", "awaiting_ci"], run: confirmThen({ title: "Abandon this task?", body: "Its worktree and branch will be deleted.", action: "Abandon", danger: true }, () => post("abandon")) },
     { label: "Reset all progress", danger: true, when: ["needs_attention", "review", "plan_review"], run: confirmThen({ title: "Reset all progress?", body: "This deletes the branch, worktree and plan, and moves the card back to Backlog.", action: "Reset", danger: true }, () => post("reset")) },
     {
       label: "Delete task",
@@ -414,6 +414,11 @@ export default function CardDetail() {
             <span className="bg-foreground/10 rounded px-1.5 py-0.5 mr-2">{repo?.name}</span>
             <span className="text-foreground/40">{repo?.path} · Branch: {card.baseBranch ?? repo?.defaultBranch ?? "main"}</span>
           </div>
+          {detail.prUrl && (
+            <p className="text-sm text-foreground/60">
+              Pull request: <a href={detail.prUrl} target="_blank" rel="noreferrer" className="text-accent underline">View pull request</a>
+            </p>
+          )}
           {card.jiraKey && (
             <p className="text-sm text-foreground/60">
               Jira: {detail.jiraUrl ? (

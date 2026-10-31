@@ -1,6 +1,6 @@
 import { eq, max, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { db, cards, repos, runs, now } from "@/db";
+import { db, cards, repos, runs, prWaits, now } from "@/db";
 import { getSettings } from "@/server/settings";
 import { modelTag } from "@/server/modelTag";
 import { getOrchestrator } from "@/server/orchestrator";
@@ -48,12 +48,23 @@ export async function GET() {
       .map((run) => [run.cardId, run]),
   );
 
+  // Spec 33: the pull request a card is waiting on, so the board can link it.
+  const waitingPrs = new Map(
+    db
+      .select({ cardId: prWaits.cardId, prUrl: prWaits.prUrl })
+      .from(prWaits)
+      .where(eq(prWaits.status, "waiting"))
+      .all()
+      .map((wait) => [wait.cardId, wait.prUrl]),
+  );
+
   const out = allCards.map((card) => {
     const repo = allRepos.get(card.repoId);
     const latestRun = latestRuns.get(card.id);
     return {
       ...card,
       repoName: repo?.name ?? "?",
+      prUrl: waitingPrs.get(card.id) ?? null,
       latestRun: latestRun
         ? {
             id: latestRun.id,
