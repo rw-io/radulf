@@ -99,6 +99,9 @@ export class GiteaDelivery {
   /** waitId to the last time this process polled it, in ms. */
   private readonly lastPolled = new Map<string, number>();
   private polling = false;
+  /** Merges and CI hand-offs this process is running, each holding its card
+   * in `reviewing` with no delivery row; a shutdown drain waits for them. */
+  private claims = 0;
 
   constructor(private readonly hooks: GiteaDeliveryHooks) {}
 
@@ -247,6 +250,11 @@ export class GiteaDelivery {
     return { ok: true };
   }
 
+  /** True while a merge or a CI hand-off holds a card in `reviewing`. */
+  inFlight(): boolean {
+    return this.claims > 0;
+  }
+
   /**
    * Worker tick (spec 33 steps 5 and 6): take every `waiting` row one step.
    * The wait lives in the database, so a restarted or second worker picks up
@@ -327,7 +335,7 @@ export class GiteaDelivery {
       return readFailed(e);
     }
     if (pull.merged) {
-      return this.underMergeClaim(wait, card, repo, auth.token, () =>
+      return this.underMergeClaim(wait, card, repo, auth.token, `merging ${wait.prUrl}`, () =>
         this.finish(wait, card, run, repo, auth.token, pull.mergeCommitSha),
       );
     }
@@ -342,7 +350,7 @@ export class GiteaDelivery {
     } catch (e) {
       return readFailed(e);
     }
-    if (ci.state === "failure" || ci.state === "error") return this.handleCiFailure(wait, card, ci.statuses, auth);
+    if (ci.state === "failure" || ci.state === "error") return this.handleCiFailure(wait, card, repo, ci.statuses, auth);
     if (ci.state === "pending") {
       if (sincePush >= CI_TIMEOUT_MS) this.park(wait, "awaiting_ci", "timed_out", timedOut);
       return;
@@ -356,7 +364,9 @@ export class GiteaDelivery {
       const reason = `the pull request's branch moved after CI ran (someone else pushed to it): ${wait.prUrl}`;
       return this.park(wait, "awaiting_ci", "failed", reason);
     }
-    return this.underMergeClaim(wait, card, repo, auth.token, () => this.merge(wait, card, run, repo, auth, nowMs));
+    return this.underMergeClaim(wait, card, repo, auth.token, `merging ${wait.prUrl}`, () =>
+      this.merge(wait, card, run, repo, auth, nowMs),
+    );
   }
 
   /**
@@ -364,13 +374,14 @@ export class GiteaDelivery {
    * conflict does, with feedback that names and links each failing check and
    * carries its log tail where Gitea Actions has one. The `ci_failed` rows
    * this card already has are its round-trips so far; one more than
-   * `MAX_CI_ROUNDS` parks it instead. The card is held in `reviewing` while
-   * the logs are read, so Abandon and other workers leave it alone, as they
-   * do during a merge.
+   * `MAX_CI_ROUNDS` parks it instead. The card is held in `reviewing`, under
+   * the repo lease, while the logs are read, so Abandon, other workers and
+   * boot recovery leave it alone, as they do during a merge.
    */
   private async handleCiFailure(
     wait: Wait,
     card: Card,
+    repo: Repo,
     statuses: GiteaCombinedStatus["statuses"],
     auth: GiteaAuth,
   ) {
@@ -384,28 +395,40 @@ export class GiteaDelivery {
       return this.park(wait, "awaiting_ci", "ci_failed", reason);
     }
     const headline = `CI failed on ${wait.prUrl}`;
-    if (!this.hooks.moveCard(card.id, "awaiting_ci", "reviewing", headline)) return;
     const failing = statuses.filter((s) => s.state === "failure" || s.state === "error");
     const lines = [headline, ...failing.map((s) => (s.targetUrl ? `- ${s.context}: ${s.targetUrl}` : `- ${s.context}`))];
-    this.endWait(wait.id, "ci_failed", scrubSecret(lines.join("\n"), auth.token));
-    try {
-      for (const job of await failedJobLogs(auth, wait.owner, wait.repo, wait.headSha)) {
-        lines.push("", `${job.name}${job.url ? ` (${job.url})` : ""}:`, "```", job.logTail, "```");
+    const verdict = scrubSecret(lines.join("\n"), auth.token);
+    return this.underMergeClaim(wait, card, repo, auth.token, `sending the CI failure on ${wait.prUrl} back to the loop`, async () => {
+      try {
+        for (const job of await failedJobLogs(auth, wait.owner, wait.repo, wait.headSha)) {
+          lines.push("", `${job.name}${job.url ? ` (${job.url})` : ""}:`, "```", job.logTail, "```");
+        }
+        await this.hooks.reloopForCi({ ...card, status: "reviewing" }, scrubSecret(lines.join("\n"), auth.token));
+      } catch (e) {
+        const reason = `cannot send the CI failure on ${wait.prUrl} back to the loop: ${errorMessage(e)}`;
+        return this.park(wait, "reviewing", "ci_failed", scrubSecret(reason, auth.token));
       }
-      await this.hooks.reloopForCi({ ...card, status: "reviewing" }, scrubSecret(lines.join("\n"), auth.token));
-    } catch (e) {
-      const reason = `cannot send the CI failure on ${wait.prUrl} back to the loop: ${errorMessage(e)}`;
-      this.park(wait, "reviewing", "ci_failed", scrubSecret(reason, auth.token));
-    }
+      // Ended only now: a restart before this leaves the wait `waiting`
+      // behind a `reviewing` card, which boot recovery sends back to wait.
+      this.endWait(wait.id, "ci_failed", verdict);
+    });
   }
 
   /**
-   * Step 6 retakes the repo lease, as any write to the repository's refs
-   * does, and moves the card `awaiting_ci` to `reviewing` so Abandon and
-   * other workers leave it alone meanwhile. Either one held elsewhere skips
-   * this tick. The lease is released however `step` ends.
+   * Step 6, and the CI hand-off, retake the repo lease, as any write to the
+   * repository's refs does, and move the card `awaiting_ci` to `reviewing`
+   * so Abandon and other workers leave it alone meanwhile. Either one held
+   * elsewhere skips this tick. The lease is released however `step` ends.
+   * A held lease is also what tells boot recovery the card is being worked.
    */
-  private async underMergeClaim(wait: Wait, card: Card, repo: Repo, token: string, step: () => Promise<void>) {
+  private async underMergeClaim(
+    wait: Wait,
+    card: Card,
+    repo: Repo,
+    token: string,
+    doing: string,
+    step: () => Promise<void>,
+  ) {
     const workerId = this.hooks.workerId();
     const leased = db.transaction(
       (tx) => acquireRepoLease(repo.path, workerId, getSettings().workerStaleSeconds, tx),
@@ -413,11 +436,14 @@ export class GiteaDelivery {
     );
     if (!leased) return;
     try {
-      if (!this.hooks.moveCard(card.id, "awaiting_ci", "reviewing", `merging ${wait.prUrl}`)) return;
+      if (!this.hooks.moveCard(card.id, "awaiting_ci", "reviewing", doing)) return;
+      this.claims++;
       try {
         await step();
       } catch (e) {
-        this.park(wait, "reviewing", "failed", scrubSecret(`merging ${wait.prUrl} failed: ${errorMessage(e)}`, token));
+        this.park(wait, "reviewing", "failed", scrubSecret(`${doing} failed: ${errorMessage(e)}`, token));
+      } finally {
+        this.claims--;
       }
     } finally {
       releaseRepoLease(repo.path, workerId);
@@ -496,7 +522,6 @@ export class GiteaDelivery {
    * and a reconcile that fails is recorded rather than holding the card back.
    */
   private async finish(wait: Wait, card: Card, run: Run, repo: Repo, token: string, mergeCommit: string | null) {
-    this.endWait(wait.id, "merged", null);
     const base = wait.baseBranch;
     let reconciled: ReconcileResult;
     try {
@@ -516,6 +541,10 @@ export class GiteaDelivery {
     const outcome: DoneOutcome = mergeCommit
       ? { kind: "merge", baseBranch: base, mergeCommit }
       : { kind: "pr", prUrl: wait.prUrl };
+    // Ended only now, after the reconcile: a restart during it leaves the
+    // wait `waiting`, so boot recovery resumes it and the next poll finishes
+    // the card. Nothing awaits between this and the move to `done`.
+    this.endWait(wait.id, "merged", null);
     await this.hooks.completeApproval(
       { ...card, status: "reviewing" },
       run,

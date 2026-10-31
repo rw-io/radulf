@@ -15,6 +15,7 @@ import {
   reviewDeliveries,
   reviews,
   refWrites,
+  prWaits,
   type ApprovedInstallScript,
   type CardStatus,
   type EpicRunMode,
@@ -59,7 +60,7 @@ import { PlanningService, pendingReplanFeedback, planningDestination, writePlanR
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { PlanCriticService } from "./planCriticService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
-import { releaseLeasesHeldBy, releaseStaleLeases } from "./repoLeases";
+import { leaseHolder, releaseLeasesHeldBy, releaseStaleLeases } from "./repoLeases";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
 import {
@@ -639,6 +640,7 @@ export class Orchestrator {
       .run();
 
     if (options.orphans) {
+      this.resumeStrandedPullRequestWaits(staleSeconds);
       // Any card still marked planning/looping/evaluating with no run at all
       // lost its run some other way (a reviewing card whose delivery row was
       // finished — or never created — without the card being moved on). Only
@@ -665,25 +667,48 @@ export class Orchestrator {
         // A reviewing card with a queued or running delivery is owned (or
         // about to be claimed) by a worker; the delivery reaper above judges
         // it, not this sweep.
-        if (card.status === "reviewing") {
-          const owned = db
-            .select({ id: reviewDeliveries.id })
-            .from(reviewDeliveries)
-            .where(
-              and(
-                eq(reviewDeliveries.cardId, card.id),
-                inArray(reviewDeliveries.status, ["pending", "running"]),
-              ),
-            )
-            .get();
-          if (owned) continue;
-        }
+        if (card.status === "reviewing" && this.hasOpenDelivery(card.id)) continue;
         this.parkOrResume(card);
       }
     }
 
     for (const id of staleWorkerIds(staleSeconds)) {
       if (id !== this.workerId) deleteWorker(id);
+    }
+  }
+
+  private hasOpenDelivery(cardId: string): boolean {
+    return (
+      db
+        .select({ id: reviewDeliveries.id })
+        .from(reviewDeliveries)
+        .where(and(eq(reviewDeliveries.cardId, cardId), inArray(reviewDeliveries.status, ["pending", "running"])))
+        .get() !== undefined
+    );
+  }
+
+  /** Spec 33, boot only: the pull request poller holds a card in `reviewing`
+   * while it merges or hands a CI failure back to the loop, with no delivery
+   * row, and ends the card's wait only once that is done. A restart in the
+   * middle leaves the card there with its wait still `waiting`. With no open
+   * delivery and no live worker holding the repo lease, nobody is working on
+   * it, so it goes back to `awaiting_ci` and the next poll reads the pull
+   * request again. Runs before the orphan sweep, which would otherwise park
+   * it as interrupted. */
+  private resumeStrandedPullRequestWaits(staleSeconds: number): void {
+    const live = new Set([...liveWorkerIds(staleSeconds), this.workerId]);
+    const stranded = db
+      .selectDistinct({ id: cards.id, repoId: cards.repoId })
+      .from(cards)
+      .innerJoin(prWaits, and(eq(prWaits.cardId, cards.id), eq(prWaits.status, "waiting")))
+      .where(eq(cards.status, "reviewing"))
+      .all();
+    for (const card of stranded) {
+      if (this.hasOpenDelivery(card.id)) continue;
+      const repo = getRepo(card.repoId);
+      const holder = repo ? leaseHolder(repo.path) : null;
+      if (holder !== null && live.has(holder)) continue;
+      this.moveCard(card.id, "reviewing", "awaiting_ci", "waiting for CI again after a restart");
     }
   }
 
@@ -1507,10 +1532,17 @@ export class Orchestrator {
 
   /** True while this worker owns a running run OR a running review delivery
    * (merge / push / PR of an approved card, whose card sits in `reviewing`),
+   * OR a pull request merge or CI hand-off of its spec 33 poller (also in
+   * `reviewing`, with no delivery row),
    * or any repo has a card in a running status — used by graceful shutdown.
    * Deliberately global, unlike pipelineBusy(repoId). */
   hasInFlightWork(): boolean {
-    return this.ownsRunningRun() || this.ownsRunningDelivery() || this.cardInStatus(RUNNING_STATUSES);
+    return (
+      this.ownsRunningRun() ||
+      this.ownsRunningDelivery() ||
+      this.reviewService.pollInFlight() ||
+      this.cardInStatus(RUNNING_STATUSES)
+    );
   }
 
   /**

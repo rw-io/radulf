@@ -4,7 +4,27 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDataDir } from "@/testUtils/testDataDir";
 
-const mocks = vi.hoisted(() => ({ staleSeconds: 120 }));
+const mocks = vi.hoisted(() => ({
+  staleSeconds: 120,
+  getPull: vi.fn(),
+  getCombinedStatus: vi.fn(),
+  mergePull: vi.fn(),
+  failedJobLogs: vi.fn(),
+}));
+
+// Spec 33: the pull request poller's Gitea calls, held mid-flight by the
+// tests that need a merge or a CI hand-off in progress.
+vi.mock("./gitea", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./gitea")>()),
+  getPull: mocks.getPull,
+  getCombinedStatus: mocks.getCombinedStatus,
+  mergePull: mocks.mergePull,
+  failedJobLogs: mocks.failedJobLogs,
+}));
+vi.mock("./forgeConnections", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./forgeConnections")>()),
+  connectionAuth: () => ({ baseUrl: "https://gitea.example", token: "tok" }),
+}));
 
 vi.mock("./settings", async (importOriginal) => {
   // Built from the original's defaults rather than testSettings: that helper
@@ -24,7 +44,7 @@ vi.mock("./settings", async (importOriginal) => {
 
 const testDataDir = setupTestDataDir("radulf-orchestrator-shutdown-");
 
-const { db, cards, events, iterations, plans, repoLeases, repos, reviewDeliveries, runs, workers, now } =
+const { db, cards, events, iterations, plans, prWaits, repoLeases, repos, reviewDeliveries, runs, workers, now } =
   await import("@/db");
 const { Orchestrator, disposeAllOrchestrators } = await import("./orchestrator");
 const { runScratchRoot } = await import("./sandbox/context");
@@ -99,6 +119,8 @@ const worker = (id: string) => db.select().from(workers).where(eq(workers.id, id
 
 beforeEach(() => {
   mocks.staleSeconds = 120;
+  vi.clearAllMocks();
+  db.delete(prWaits).run();
   db.delete(reviewDeliveries).run();
   db.delete(repoLeases).run();
   db.delete(workers).run();
@@ -242,6 +264,104 @@ describe("releaseOwnedWork", () => {
     expect(worker(o.workerId)).toBeUndefined();
 
     claim.mockRestore();
+    fresh.startDraining();
+  });
+});
+
+describe("spec 33: the pull request poller and a restart", () => {
+  const PR = {
+    number: 7,
+    url: "https://gitea.example/o/r/pulls/7",
+    state: "open" as const,
+    merged: false,
+    mergeable: true,
+    headSha: "head-1",
+    mergeCommitSha: null,
+  };
+
+  /** A card waiting for CI on its pull request, pushed ten minutes ago. */
+  function seedWaitingCard() {
+    seedCard("c1", { status: "awaiting_ci" });
+    db.insert(plans)
+      .values({ id: "p1", cardId: "c1", version: 1, planMd: "## Tasks\n- [x] a\n", promptMd: "", acceptanceCriteria: "", createdAt: now() })
+      .run();
+    seedRun("r1", "c1", { planId: "p1", status: "completed", endedAt: now() });
+    const pushedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    db.insert(prWaits)
+      .values({
+        id: "w1",
+        cardId: "c1",
+        runId: "r1",
+        repoId: "repo-1",
+        connectionId: "conn-1",
+        owner: "o",
+        repo: "r",
+        branch: "ralph/x",
+        baseBranch: "main",
+        prNumber: 7,
+        prUrl: PR.url,
+        headSha: "head-1",
+        status: "waiting",
+        pushedAt,
+        createdAt: pushedAt,
+      })
+      .run();
+  }
+
+  function held<T>() {
+    let settle!: (value: T) => void;
+    const promise = new Promise<T>((resolve) => (settle = resolve));
+    return { promise, settle };
+  }
+
+  const wait = () => db.select().from(prWaits).where(eq(prWaits.id, "w1")).get()!;
+
+  it("hasInFlightWork is true while the poller merges, so the drain waits for it", async () => {
+    const o = new Orchestrator({ autoStart: false });
+    seedWaitingCard();
+    mocks.getPull.mockResolvedValue(PR);
+    mocks.getCombinedStatus.mockResolvedValue({ state: "success", statuses: [] });
+    let fail!: (e: Error) => void;
+    mocks.mergePull.mockReturnValue(new Promise((_, reject) => (fail = reject)));
+
+    expect(o.hasInFlightWork()).toBe(false);
+    o.pump();
+    await vi.waitFor(() => expect(mocks.mergePull).toHaveBeenCalled());
+
+    expect(card("c1").status).toBe("reviewing");
+    expect(o.hasInFlightWork()).toBe(true);
+    fail(new Error("bad gateway"));
+    await vi.waitFor(() => expect(card("c1").status).toBe("awaiting_ci"));
+    expect(o.hasInFlightWork()).toBe(false);
+  });
+
+  it("a worker that dies between the CI failure claim and the loop hand-off leaves a wait the next boot resumes", async () => {
+    const dying = new Orchestrator({ autoStart: false });
+    seedWaitingCard();
+    mocks.getPull.mockResolvedValue(PR);
+    mocks.getCombinedStatus.mockResolvedValue({
+      state: "failure",
+      statuses: [{ context: "ci/build", state: "failure", targetUrl: null }],
+    });
+    // The hand-off never gets the logs: the process "dies" while it waits.
+    mocks.failedJobLogs.mockReturnValue(held<never[]>().promise);
+
+    dying.pump();
+    await vi.waitFor(() => expect(mocks.failedJobLogs).toHaveBeenCalled());
+    expect(card("c1").status).toBe("reviewing");
+    expect(wait().status).toBe("waiting");
+
+    // Dead: no heartbeat (its row goes stale) and nothing it held is released.
+    dying.dispose();
+    db.update(workers).set({ heartbeatAt: new Date(Date.now() - 600_000).toISOString() }).where(eq(workers.id, dying.workerId)).run();
+    // The new worker's first poll stops at its read of the pull request, so
+    // only boot recovery acts on the card here.
+    mocks.getPull.mockReturnValue(new Promise(() => {}));
+    const fresh = new Orchestrator();
+
+    expect(card("c1").status).toBe("awaiting_ci");
+    expect(wait().status).toBe("waiting");
+    expect(db.select().from(plans).where(eq(plans.cardId, "c1")).all()).toHaveLength(1);
     fresh.startDraining();
   });
 });

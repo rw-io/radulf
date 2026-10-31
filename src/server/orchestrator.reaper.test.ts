@@ -30,6 +30,7 @@ const {
   events,
   iterations,
   plans,
+  prWaits,
   repoLeases,
   repos,
   reviewDeliveries,
@@ -112,6 +113,7 @@ const worker = (id: string) => db.select().from(workers).where(eq(workers.id, id
 
 beforeEach(() => {
   mocks.staleSeconds = 120;
+  db.delete(prWaits).run();
   db.delete(reviewDeliveries).run();
   db.delete(reviews).run();
   db.delete(repoLeases).run();
@@ -341,6 +343,81 @@ describe("delivery reaper (spec 25 decision 6)", () => {
 
     expect(delivery("d1").status).toBe("running");
     expect(lease("/tmp/repo-1")?.workerId).toBe("alive");
+    expect(card("c1").status).toBe("reviewing");
+  });
+
+  /** Spec 33: a pull request still waiting on Gitea for `cardId`'s run. */
+  function seedWait(cardId: string, runId: string) {
+    db.insert(prWaits)
+      .values({
+        id: `wait-${cardId}`,
+        cardId,
+        runId,
+        repoId: "repo-1",
+        connectionId: "conn-1",
+        owner: "o",
+        repo: "r",
+        branch: "ralph/x",
+        baseBranch: "main",
+        prNumber: 7,
+        prUrl: "https://gitea.example/o/r/pulls/7",
+        headSha: "head-1",
+        status: "waiting",
+        pushedAt: now(),
+        createdAt: now(),
+      })
+      .run();
+  }
+
+  it("boot recovery sends a card stranded mid-merge back to waiting for CI", () => {
+    // One restarted at once, one idle past the stale window that the orphan
+    // sweep would otherwise park as interrupted.
+    seedCard("c-fresh", { status: "reviewing" });
+    seedRun("r-fresh", "c-fresh", { status: "completed", endedAt: now() });
+    seedWait("c-fresh", "r-fresh");
+    seedCard("c-idle", { status: "reviewing", updatedAt: secondsAgo(600) });
+    seedRun("r-idle", "c-idle", { status: "completed", endedAt: now() });
+    seedWait("c-idle", "r-idle");
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns({ orphans: true });
+
+    expect(card("c-fresh").status).toBe("awaiting_ci");
+    expect(card("c-idle").status).toBe("awaiting_ci");
+    const waits = db.select().from(prWaits).all();
+    expect(waits.map((w) => w.status)).toEqual(["waiting", "waiting"]);
+  });
+
+  it("boot recovery leaves a stranded-looking card alone while a live worker holds its repo lease", () => {
+    seedWorker("alive", now());
+    db.insert(repoLeases).values({ repoPath: "/tmp/repo-1", workerId: "alive", acquiredAt: now() }).run();
+    seedCard("c1", { status: "reviewing" });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedWait("c1", "r1");
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns({ orphans: true });
+
+    expect(card("c1").status).toBe("reviewing");
+  });
+
+  it("boot recovery leaves a card with an open delivery to the delivery reaper", () => {
+    seedCard("c1", { status: "reviewing" });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedWait("c1", "r1");
+    seedDelivery("d1", "c1", "r1", { status: "pending" });
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns({ orphans: true });
+
+    expect(card("c1").status).toBe("reviewing");
+    expect(delivery("d1").status).toBe("pending");
+  });
+
+  it("the continuous reaper never moves a card with a waiting pull request", () => {
+    seedCard("c1", { status: "reviewing", updatedAt: secondsAgo(600) });
+    seedRun("r1", "c1", { status: "completed", endedAt: now() });
+    seedWait("c1", "r1");
+
+    new Orchestrator({ autoStart: false }).reapStaleRuns();
+
     expect(card("c1").status).toBe("reviewing");
   });
 

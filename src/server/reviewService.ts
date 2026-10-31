@@ -526,6 +526,12 @@ export class ReviewService {
     return this.gitea.pollWaits(nowMs);
   }
 
+  /** True while the poller merges a pull request or hands a CI failure back
+   * to the loop: work a shutdown drain must wait for (spec 33). */
+  public pollInFlight(): boolean {
+    return this.gitea.inFlight();
+  }
+
   private async deliver(
     card: Card,
     run: Run,

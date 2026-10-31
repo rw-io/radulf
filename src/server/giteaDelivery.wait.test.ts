@@ -621,7 +621,9 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
     expect(statusOf()).toBe("ready");
     expect(deps.moveCard).toHaveBeenCalledWith("card-1", "awaiting_ci", "reviewing", expect.any(String));
     expect(deps.moveCard).toHaveBeenLastCalledWith("card-1", "reviewing", "ready", "CI failed; fixing in the loop");
-    expect(waitWhenReady).toBe("ci_failed");
+    // The wait ends only once the loop has the failure, so a restart before
+    // that leaves a wait boot recovery can resume.
+    expect(waitWhenReady).toBe("waiting");
     expect(wait()?.status).toBe("ci_failed");
     expect(wait()?.endedAt).not.toBeNull();
     const plan = deps.latestPlan("card-1")!;
@@ -686,6 +688,71 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
     expect(statusOf()).toBe("ready");
     expect(plan.promptMd).toContain(`CI failed on ${PR_URL}\n- ci/build: https://ci/1\n- ci/e2e\n`);
     expect(plan.promptMd).not.toContain("```");
+  });
+
+  /** A promise the test settles by hand, to hold a step mid-flight. */
+  function held<T>() {
+    let settle!: (value: T) => void;
+    const promise = new Promise<T>((resolve) => (settle = resolve));
+    return { promise, settle };
+  }
+
+  it("the ci hand-off keeps the wait open until the loop has the failure", async () => {
+    seedCard();
+    seedWait(10);
+    ciFails();
+    const logs = held<never[]>();
+    mocks.failedJobLogs.mockReturnValue(logs.promise);
+    const service = new ReviewService(makeDeps());
+
+    const polling = service.pollPullRequestWaits(NOW);
+    await vi.waitFor(() => expect(mocks.failedJobLogs).toHaveBeenCalled());
+
+    // A restart here leaves exactly what boot recovery resumes: a reviewing
+    // card whose wait is still `waiting`.
+    expect(statusOf()).toBe("reviewing");
+    expect(wait()?.status).toBe("waiting");
+    expect(service.pollInFlight()).toBe(true);
+    logs.settle([]);
+    await polling;
+    expect(statusOf()).toBe("ready");
+    expect(wait()?.status).toBe("ci_failed");
+    expect(service.pollInFlight()).toBe(false);
+  });
+
+  it("the ci hand-off waits for the repo lease like a merge", async () => {
+    seedCard();
+    seedWait(10);
+    ciFails();
+    db.insert(workers)
+      .values({ id: "worker-other", host: "h", pid: 1, roles: '["worker"]', startedAt: now(), heartbeatAt: now() })
+      .run();
+    db.insert(repoLeases).values({ repoPath: REPO_PATH, workerId: "worker-other", acquiredAt: now() }).run();
+
+    await new ReviewService(makeDeps()).pollPullRequestWaits(NOW);
+
+    expect(mocks.failedJobLogs).not.toHaveBeenCalled();
+    expect(statusOf()).toBe("awaiting_ci");
+    expect(wait()?.status).toBe("waiting");
+  });
+
+  it("a restart during the local reconcile leaves the wait open", async () => {
+    seedCard();
+    seedWait(10);
+    mocks.getPull.mockResolvedValue(MERGED);
+    const reconcile = held<{ ok: true; remoteSha: string }>();
+    mocks.reconcileBase.mockReturnValue(reconcile.promise);
+    const service = new ReviewService(makeDeps());
+
+    const polling = service.pollPullRequestWaits(NOW);
+    await vi.waitFor(() => expect(mocks.reconcileBase).toHaveBeenCalled());
+
+    expect(statusOf()).toBe("reviewing");
+    expect(wait()?.status).toBe("waiting");
+    expect(service.pollInFlight()).toBe(true);
+    reconcile.settle({ ok: true, remoteSha: "merge-sha" });
+    await polling;
+    expectDone();
   });
 
   it("lease held elsewhere skips the tick", async () => {
