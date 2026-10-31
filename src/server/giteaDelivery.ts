@@ -15,7 +15,7 @@
  * first. No failure here ever falls back to a local merge: the operator asked
  * for a pull request.
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, notInArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { cards, db, now, prWaits, runs, type repos } from "@/db";
 import { errorMessage } from "@/shared/errorMessage";
@@ -564,37 +564,6 @@ export class GiteaDelivery {
     return forgeTarget(forge);
   }
 
-  /**
-   * Abandon while waiting (spec 33): close the pull request and delete its
-   * branch, so nobody merges on Gitea work Radulf has stopped watching. A
-   * Gitea failure is recorded and does not stop the abandon.
-   */
-  async closeForAbandon(cardId: string): Promise<void> {
-    const waits = db
-      .select()
-      .from(prWaits)
-      .where(and(eq(prWaits.cardId, cardId), eq(prWaits.status, "waiting")))
-      .all();
-    for (const wait of waits) {
-      let token = "";
-      let error: string | null = null;
-      try {
-        const auth = connectionAuth(wait.connectionId);
-        token = auth.token;
-        await closePull(auth, wait.owner, wait.repo, wait.prNumber);
-        await deleteBranch(auth, wait.owner, wait.repo, wait.branch);
-      } catch (e) {
-        error = scrubSecret(errorMessage(e), token);
-        emitEvent("review.pr_close_failed", {
-          cardId,
-          runId: wait.runId,
-          payload: { delivery: "gitea", prUrl: wait.prUrl, error },
-        });
-      }
-      this.endWait(wait.id, "abandoned", error);
-    }
-  }
-
   /** End a wait that is still `waiting`; one another path already ended
    * keeps its outcome. */
   private endWait(id: string, status: Exclude<WaitStatus, "waiting">, detail: string | null) {
@@ -616,4 +585,60 @@ export class GiteaDelivery {
     this.endWait(wait.id, status, reason);
     this.hooks.moveCard(wait.cardId, from, "needs_attention", reason);
   }
+}
+
+/** Statuses after which Radulf has nothing left open on Gitea. */
+const SETTLED: WaitStatus[] = ["merged", "closed", "abandoned"];
+
+/**
+ * The wait whose pull request a card may still have open on Gitea: the
+ * card's newest wait, unless that one merged, closed or was abandoned.
+ * Any other ending (timed out, refused, red CI too often, waiting) can leave
+ * the pull request open. An older wait behind a settled one is never it.
+ */
+export function openPullRequestWait(cardId: string): Wait | undefined {
+  const newest = db
+    .select()
+    .from(prWaits)
+    .where(eq(prWaits.cardId, cardId))
+    .orderBy(desc(prWaits.createdAt))
+    .limit(1)
+    .get();
+  return newest && !SETTLED.includes(newest.status) ? newest : undefined;
+}
+
+/**
+ * Abandon, Reset and Delete (spec 33): close the card's pull request and
+ * delete its branch, so nobody merges on Gitea work Radulf has stopped
+ * watching. Gitea is asked first, so a pull request someone already merged
+ * or closed there is left as it is. The wait is marked `abandoned` either
+ * way. A Gitea failure is recorded as `review.pr_close_failed` and does not
+ * stop the action. The caller claims the card first, so the poller cannot
+ * start a merge meanwhile.
+ */
+export async function closeOpenPullRequest(cardId: string): Promise<void> {
+  const wait = openPullRequestWait(cardId);
+  if (!wait) return;
+  let token = "";
+  let error: string | null = null;
+  try {
+    const auth = connectionAuth(wait.connectionId);
+    token = auth.token;
+    const pull = await getPull(auth, wait.owner, wait.repo, wait.prNumber);
+    if (pull.state === "open") {
+      await closePull(auth, wait.owner, wait.repo, wait.prNumber);
+      await deleteBranch(auth, wait.owner, wait.repo, wait.branch);
+    }
+  } catch (e) {
+    error = scrubSecret(errorMessage(e), token);
+    emitEvent("review.pr_close_failed", {
+      cardId,
+      runId: wait.runId,
+      payload: { delivery: "gitea", prUrl: wait.prUrl, error },
+    });
+  }
+  db.update(prWaits)
+    .set({ status: "abandoned", detail: error ?? wait.detail, endedAt: wait.endedAt ?? now() })
+    .where(and(eq(prWaits.id, wait.id), notInArray(prWaits.status, SETTLED)))
+    .run();
 }

@@ -102,7 +102,9 @@ const {
   improvementRuns,
   iterations,
   now,
+  forgeConnections,
   plans,
+  prWaits,
   repos,
   reviews,
   reviewDeliveries,
@@ -119,6 +121,7 @@ const { POST: postReview } = await import("@/app/api/reviews/route");
 const { POST: postCardAction } = await import("@/app/api/cards/[id]/[action]/route");
 const { pruneRuntimeHistory } = await import("./retention");
 const { DELETE: deleteRepo } = await import("@/app/api/repos/[id]/route");
+const { saveConnection } = await import("./forgeConnections");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -3383,6 +3386,105 @@ describe("Orchestrator cancellation lifecycle", () => {
       expect(db.select().from(events).all()).toHaveLength(1);
       expect(db.select().from(events).all()[0].type).toBe("card.moved");
       expect(db.select().from(runs).all()).toHaveLength(0);
+    });
+
+    /** Spec 33: a Gitea that answers the pull request reads and writes a
+     * reset makes, recording each call; `closeStatus` is the close's answer. */
+    async function stubGitea(closeStatus = 200) {
+      const calls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+          const method = init?.method ?? "GET";
+          calls.push(`${method} ${url}`);
+          if (url.endsWith("/user")) return new Response(JSON.stringify({ login: "bot" }));
+          if (method === "GET") {
+            return new Response(
+              JSON.stringify({
+                number: 7,
+                html_url: "https://gitea.example/o/r/pulls/7",
+                state: "open",
+                merged: false,
+                mergeable: true,
+                head: { ref: "ralph/reset-pr-run", sha: "head-1" },
+                base: { ref: "main" },
+                merge_commit_sha: null,
+              }),
+            );
+          }
+          if (method === "PATCH" && closeStatus !== 200) {
+            return new Response(JSON.stringify({ message: "token tok-reset cannot close" }), { status: closeStatus });
+          }
+          return new Response(null, { status: 204 });
+        }),
+      );
+      const connection = await saveConnection({ kind: "gitea", baseUrl: "https://gitea.example", token: "tok-reset" });
+      return { calls, connection };
+    }
+
+    function seedTimedOutWait(cardId: string, runId: string, connectionId: string) {
+      db.insert(prWaits)
+        .values({
+          id: `wait-${cardId}`,
+          cardId,
+          runId,
+          repoId: "repo-1",
+          connectionId,
+          owner: "o",
+          repo: "r",
+          branch: `ralph/${runId}`,
+          baseBranch: "main",
+          prNumber: 7,
+          prUrl: "https://gitea.example/o/r/pulls/7",
+          headSha: "head-1",
+          status: "timed_out",
+          pushedAt: now(),
+          createdAt: now(),
+          endedAt: now(),
+        })
+        .run();
+    }
+
+    it("reset closes the pull request a parked card left open on Gitea", async () => {
+      card("reset-pr", "needs_attention");
+      plan("reset-pr");
+      completedRun("reset-pr", "reset-pr-run");
+      try {
+        const { calls, connection } = await stubGitea();
+        seedTimedOutWait("reset-pr", "reset-pr-run", connection.id);
+
+        await new Orchestrator({ autoStart: false }).resetCard("reset-pr");
+
+        expect(calls).toContain("GET https://gitea.example/api/v1/repos/o/r/pulls/7");
+        expect(calls).toContain("PATCH https://gitea.example/api/v1/repos/o/r/pulls/7");
+        expect(calls).toContain("DELETE https://gitea.example/api/v1/repos/o/r/branches/ralph/reset-pr-run");
+        expect(db.select().from(prWaits).all()).toHaveLength(0);
+        expect(getCard("reset-pr").status).toBe("backlog");
+      } finally {
+        vi.unstubAllGlobals();
+        db.delete(forgeConnections).run();
+      }
+    });
+
+    it("reset still completes when Gitea refuses the close, and the card keeps the failure", async () => {
+      card("reset-pr", "needs_attention");
+      plan("reset-pr");
+      completedRun("reset-pr", "reset-pr-run");
+      try {
+        const { connection } = await stubGitea(403);
+        seedTimedOutWait("reset-pr", "reset-pr-run", connection.id);
+
+        await new Orchestrator({ autoStart: false }).resetCard("reset-pr");
+
+        expect(getCard("reset-pr").status).toBe("backlog");
+        const kept = db.select().from(events).where(eq(events.cardId, "reset-pr")).all();
+        expect(kept.map((e) => e.type)).toEqual(["review.pr_close_failed", "card.moved"]);
+        expect(kept[0].payload).toContain("cannot close");
+        expect(kept[0].payload).not.toContain("tok-reset");
+      } finally {
+        vi.unstubAllGlobals();
+        db.delete(forgeConnections).run();
+      }
     });
 
     it("refuses to reset a card that is running or holds the review claim", async () => {

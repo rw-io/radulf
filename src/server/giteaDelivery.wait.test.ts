@@ -882,6 +882,72 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
     expect(mocks.mergePull).not.toHaveBeenCalled();
   });
 
+  it("abandon from needs attention closes the pull request a timed out wait left open", async () => {
+    seedCard("needs_attention");
+    seedWait(130, { status: "timed_out", detail: `CI did not finish within 2 hours: ${PR_URL}`, endedAt: now() });
+    const deps = makeDeps();
+
+    await new ReviewService(deps).abandon("card-1");
+
+    expect(mocks.getPull).toHaveBeenCalledWith(AUTH, "o", "r", 7);
+    expect(mocks.closePull).toHaveBeenCalledWith(AUTH, "o", "r", 7);
+    expect(mocks.deleteBranch).toHaveBeenCalledWith(AUTH, "o", "r", BRANCH);
+    expect(wait()?.status).toBe("abandoned");
+    expect(statusOf()).toBe("abandoned");
+  });
+
+  it("abandon claims the card before closing, so the poller cannot start a merge meanwhile", async () => {
+    seedCard();
+    seedWait(10);
+    const deps = makeDeps();
+
+    await new ReviewService(deps).abandon("card-1");
+
+    const claim = deps.moveCard.mock.calls.findIndex((call) => call[2] === "abandoned");
+    expect(claim).toBeGreaterThanOrEqual(0);
+    expect(deps.moveCard.mock.invocationCallOrder[claim]).toBeLessThan(mocks.getPull.mock.invocationCallOrder[0]);
+    expect(deps.moveCard.mock.invocationCallOrder[claim]).toBeLessThan(mocks.closePull.mock.invocationCallOrder[0]);
+  });
+
+  it("abandon leaves a pull request already merged or closed on Gitea alone", async () => {
+    seedCard();
+    seedWait(10);
+    mocks.getPull.mockResolvedValue(MERGED);
+
+    await new ReviewService(makeDeps()).abandon("card-1");
+
+    expect(mocks.closePull).not.toHaveBeenCalled();
+    expect(mocks.deleteBranch).not.toHaveBeenCalled();
+    expect(statusOf()).toBe("abandoned");
+    expect(wait()?.status).toBe("abandoned");
+
+    db.delete(prWaits).run();
+    db.delete(runs).run();
+    db.delete(plans).run();
+    db.delete(cards).run();
+    seedCard("needs_attention");
+    seedWait(10, { status: "failed", endedAt: now() });
+    mocks.getPull.mockResolvedValue({ ...OPEN, state: "closed" });
+
+    await new ReviewService(makeDeps()).abandon("card-1");
+
+    expect(mocks.closePull).not.toHaveBeenCalled();
+    expect(mocks.deleteBranch).not.toHaveBeenCalled();
+    expect(statusOf()).toBe("abandoned");
+  });
+
+  it("abandon asks Gitea nothing when the card's newest wait already merged", async () => {
+    seedCard("needs_attention");
+    seedWait(60, { id: "wait-old", status: "ci_failed", endedAt: now(), createdAt: new Date(NOW - 60 * 60_000).toISOString() });
+    seedWait(10, { id: "wait-new", status: "merged", endedAt: now(), createdAt: new Date(NOW - 10 * 60_000).toISOString() });
+
+    await new ReviewService(makeDeps()).abandon("card-1");
+
+    expect(mocks.getPull).not.toHaveBeenCalled();
+    expect(mocks.closePull).not.toHaveBeenCalled();
+    expect(wait("wait-old")?.status).toBe("ci_failed");
+  });
+
   it("abandon still completes when gitea fails, and says so", async () => {
     seedCard();
     seedWait(10);

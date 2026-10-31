@@ -60,6 +60,7 @@ import { PlanningService, pendingReplanFeedback, planningDestination, writePlanR
 import { EvaluationService, clearEvaluationArtifact } from "./evaluationService";
 import { PlanCriticService } from "./planCriticService";
 import { ReviewService, type ConfigApproval } from "./reviewService";
+import { closeOpenPullRequest } from "./giteaDelivery";
 import { leaseHolder, releaseLeasesHeldBy, releaseStaleLeases } from "./repoLeases";
 import { ClientError } from "./clientError";
 import { hasRole } from "./roles";
@@ -2835,10 +2836,15 @@ export class Orchestrator {
     }
     await removeRunTranscripts(allRuns.map((run) => run.id));
 
+    // The history goes before the pull request is closed, so a failure to
+    // close it stays on the card.
+    db.delete(events).where(eq(events.cardId, cardId)).run();
+    // Spec 33: before the runs, and the pull request waits with them, are
+    // deleted.
+    await closeOpenPullRequest(cardId);
     // Runs cascade to iterations + reviews.
     db.delete(runs).where(eq(runs.cardId, cardId)).run();
     db.delete(plans).where(eq(plans.cardId, cardId)).run();
-    db.delete(events).where(eq(events.cardId, cardId)).run();
     fs.rmSync(/* turbopackIgnore: true */ planStatePath(cardId), { force: true });
     db.update(cards)
       .set({ summary: null, startedAt: null, updatedAt: now() })

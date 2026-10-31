@@ -33,7 +33,7 @@ import { appendTask } from "./checklist";
 import { ClientError } from "./clientError";
 import { getRepo, pushAfterMergeFor } from "./repos";
 import { matchRepo, type ForgeRepoRef } from "./forgeMatch";
-import { GiteaDelivery } from "./giteaDelivery";
+import { GiteaDelivery, closeOpenPullRequest } from "./giteaDelivery";
 import { resolveRemoteTarget } from "./remoteTarget";
 import { acquireRepoLease, releaseRepoLease } from "./repoLeases";
 import { EVALUATOR_CLEARED_EXITS } from "@/shared/evaluation";
@@ -276,12 +276,15 @@ export class ReviewService {
     if (active) throw new ClientError("cannot abandon a card with an active run; cancel it first");
     const repo = getRepo(card.repoId);
     if (!repo) throw new ClientError("repo not found");
-    // Spec 33: a card waiting for CI has its pull request open on Gitea. It
-    // is closed first, so nobody merges work Radulf has stopped watching.
-    if (card.status === "awaiting_ci") await this.gitea.closeForAbandon(cardId);
+    // Claimed before anything else, so the pull request poller cannot start
+    // a merge while the pull request below is being closed.
     if (!this.deps.moveCard(cardId, card.status, "abandoned")) {
       throw new ClientError("card status changed while it was being abandoned");
     }
+    // Spec 33: a card delivered to Gitea may have left its pull request
+    // open there, waiting or parked; close it, so nobody merges work Radulf
+    // has stopped watching.
+    await closeOpenPullRequest(cardId);
     // Spec 25: a web-only process never writes to a repository. It leaves the
     // worktree and branch behind for a worker's removeFinishedWorktrees sweep.
     const run = this.deps.latestWorktreeRun(cardId);

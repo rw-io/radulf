@@ -7,6 +7,7 @@ import { parseChecklist } from "@/server/checklist";
 import { parseUpdateCard } from "@/server/cardValidation";
 import { getCard, requireCard } from "@/server/cards";
 import { listChildren } from "@/server/epics";
+import { closeOpenPullRequest } from "@/server/giteaDelivery";
 import { getOrchestrator } from "@/server/orchestrator";
 import { getRepo, requireRepo } from "@/server/repos";
 import { groupBy } from "@/server/queryGrouping";
@@ -150,6 +151,10 @@ export async function DELETE(_req: Request, { params }: Ctx) {
       runIds,
     });
     db.delete(events).where(eq(events.cardId, id)).run();
+    // Spec 33: close a pull request the card left open on Gitea before its
+    // waits cascade away with it. A failure to close is the one event that
+    // outlives the card.
+    await closeOpenPullRequest(id);
     db.delete(cards).where(eq(cards.id, id)).run();
     return json({ ok: true });
   });
