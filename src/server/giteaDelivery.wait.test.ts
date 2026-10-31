@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   mergePull: vi.fn(),
   closePull: vi.fn(),
   deleteBranch: vi.fn(),
+  failedJobLogs: vi.fn(),
   mergeBaseIntoWorktree: vi.fn(),
   removeWorktree: vi.fn(),
   fetchBranchHead: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("./gitea", async (importOriginal) => ({
   mergePull: mocks.mergePull,
   closePull: mocks.closePull,
   deleteBranch: mocks.deleteBranch,
+  failedJobLogs: mocks.failedJobLogs,
 }));
 vi.mock("./git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./git")>()),
@@ -68,6 +70,7 @@ const { db, cards, events, plans, prWaits, refWrites, repoLeases, repos, reviews
   await import("@/db");
 const { ReviewService } = await import("./reviewService");
 const { GiteaError } = await import("./gitea");
+const { planStatePath } = await import("./bookkeeping");
 
 const NOW = Date.parse("2026-10-30T12:00:00.000Z");
 const TOKEN = "gta_5ecret_t0ken_value";
@@ -220,6 +223,7 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
     mocks.mergePull.mockResolvedValue({ ok: true });
     mocks.closePull.mockResolvedValue(undefined);
     mocks.deleteBranch.mockResolvedValue(undefined);
+    mocks.failedJobLogs.mockResolvedValue([]);
     mocks.mergeBaseIntoWorktree.mockResolvedValue({ ok: true, conflicted: false, out: "" });
     mocks.removeWorktree.mockResolvedValue(undefined);
     mocks.fetchBranchHead.mockResolvedValue({ ok: true, sha: "remote-base-2" });
@@ -570,22 +574,118 @@ describe("GiteaDelivery: spec 33 CI wait and merge", () => {
     expect(db.select().from(repoLeases).all()).toEqual([]);
   });
 
-  it("a failed ci run parks the card for now", async () => {
-    seedCard();
-    seedWait(10);
+  function ciFails() {
     mocks.getCombinedStatus.mockResolvedValue({
       state: "failure",
-      statuses: [{ context: "ci/build", state: "failure", targetUrl: "https://ci/1" }],
+      statuses: [
+        { context: "ci/build", state: "failure", targetUrl: "https://ci/1" },
+        { context: "ci/e2e", state: "error", targetUrl: null },
+        { context: "ci/lint", state: "success", targetUrl: "https://ci/3" },
+      ],
     });
+  }
+
+  /** An earlier round's wait, already ended by a red CI run. */
+  function seedFailedRound(id: string, cardId = "card-1") {
+    seedWait(300, { id, cardId, status: "ci_failed", endedAt: new Date(NOW - 200 * 60_000).toISOString() });
+  }
+
+  it("first ci failure re-enters the loop with the failures", async () => {
+    seedCard();
+    seedWait(10);
+    // Another card's rounds are not this card's.
+    seedFailedRound("other-a", "card-2");
+    seedFailedRound("other-b", "card-2");
+    fs.mkdirSync(path.dirname(planStatePath("card-1")), { recursive: true });
+    fs.writeFileSync(planStatePath("card-1"), "## Tasks\n- [x] implement the thing\n");
+    ciFails();
+    mocks.failedJobLogs.mockResolvedValue([
+      {
+        name: "build",
+        url: "https://gitea.example/o/r/actions/runs/3/jobs/0",
+        logTail: `FAIL src/a.test.ts\nexpected 2, got 3\nAuthorization: token ${TOKEN}`,
+      },
+    ]);
     const deps = makeDeps();
+    const move = deps.moveCard.getMockImplementation()!;
+    let waitWhenReady: string | undefined;
+    deps.moveCard.mockImplementation((cardId, from, to, reason) => {
+      if (to === "ready") waitWhenReady = wait()?.status;
+      return move(cardId, from, to, reason);
+    });
 
     await new ReviewService(deps).pollPullRequestWaits(NOW);
 
     expect(mocks.mergePull).not.toHaveBeenCalled();
+    expect(mocks.failedJobLogs).toHaveBeenCalledWith(AUTH, "o", "r", "head-1");
+    expect(statusOf()).toBe("ready");
+    expect(deps.moveCard).toHaveBeenCalledWith("card-1", "awaiting_ci", "reviewing", expect.any(String));
+    expect(deps.moveCard).toHaveBeenLastCalledWith("card-1", "reviewing", "ready", "CI failed; fixing in the loop");
+    expect(waitWhenReady).toBe("ci_failed");
+    expect(wait()?.status).toBe("ci_failed");
+    expect(wait()?.endedAt).not.toBeNull();
+    const plan = deps.latestPlan("card-1")!;
+    expect(plan.version).toBe(2);
+    expect(plan.feedback).toBe(`CI failed on ${PR_URL}`);
+    expect(plan.promptMd).toContain("## CI failed on the pull request: fix this first");
+    expect(plan.promptMd).toContain("- ci/build: https://ci/1");
+    expect(plan.promptMd).toContain("expected 2, got 3");
+    expect(plan.promptMd).not.toContain("ci/lint");
+    expect(plan.promptMd).not.toContain(TOKEN);
+    expect(plan.promptMd).toContain("Implement the thing.");
+    expect(fs.readFileSync(planStatePath("card-1"), "utf8")).toContain(
+      "Follow the CI failure section at the top of your prompt: make the failing checks pass, and run the failing commands locally where you can as this task's targeted verification.",
+    );
+    expect(deps.pump).toHaveBeenCalled();
+  });
+
+  it("skips plan review even when the card asks for it", async () => {
+    seedCard();
+    db.update(cards).set({ reviewPlanBeforeImplementation: 1 }).where(eq(cards.id, "card-1")).run();
+    seedWait(10);
+    ciFails();
+    const deps = makeDeps();
+
+    await new ReviewService(deps).pollPullRequestWaits(NOW);
+
+    expect(statusOf()).toBe("ready");
+    const destinations = deps.moveCard.mock.calls.map((call) => call[2]);
+    expect(destinations).not.toContain("plan_review");
+    expect(destinations).not.toContain("todo");
+  });
+
+  it("third failure parks the card", async () => {
+    seedCard();
+    seedFailedRound("round-1");
+    seedFailedRound("round-2");
+    seedWait(10);
+    ciFails();
+    const deps = makeDeps();
+
+    await new ReviewService(deps).pollPullRequestWaits(NOW);
+
+    const reason = `CI failed 3 times on ${PR_URL}; stopping so it does not loop forever`;
     expect(statusOf()).toBe("needs_attention");
-    expect(lastReason(deps)).toContain(PR_URL);
-    expect(lastReason(deps)).toContain("ci/build");
-    expect(wait()?.status).toBe("failed");
+    expect(lastReason(deps)).toBe(reason);
+    expect(lastReason(deps)).toContain("CI failed 3 times");
+    expect(wait()).toMatchObject({ status: "ci_failed", detail: reason });
+    expect(deps.latestPlan("card-1")?.version).toBe(1);
+    expect(mocks.failedJobLogs).not.toHaveBeenCalled();
+  });
+
+  it("missing logs still give names and links", async () => {
+    seedCard();
+    seedWait(10);
+    ciFails();
+    mocks.failedJobLogs.mockResolvedValue([]);
+    const deps = makeDeps();
+
+    await new ReviewService(deps).pollPullRequestWaits(NOW);
+
+    const plan = deps.latestPlan("card-1")!;
+    expect(statusOf()).toBe("ready");
+    expect(plan.promptMd).toContain(`CI failed on ${PR_URL}\n- ci/build: https://ci/1\n- ci/e2e\n`);
+    expect(plan.promptMd).not.toContain("```");
   });
 
   it("lease held elsewhere skips the tick", async () => {

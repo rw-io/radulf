@@ -129,6 +129,7 @@ export class ReviewService {
       moveCard: this.deps.moveCard,
       decided,
       reloopForConflict: (...a) => this.reloopForConflict(...a),
+      reloopForCi: (...a) => this.reloopForCi(...a),
       completeApproval: (...a) => this.completeApproval(...a),
       workerId: () => this.deps.workerId(),
       pump: () => this.deps.pump(),
@@ -801,15 +802,47 @@ export class ReviewService {
       alreadyMerged ?? (await mergeBaseIntoWorktree(run.worktreePath, baseBranch));
     if (!merged.ok && !merged.conflicted) return false;
 
-    const plan = this.deps.latestPlan(card.id)!;
     const preamble = merged.conflicted
       ? `## Merge conflict — resolve this first\n\nYour branch conflicts with \`${baseBranch}\`, which changed while you worked. \`${baseBranch}\` has been merged into your branch and the conflicted files now contain \`<<<<<<<\` / \`=======\` / \`>>>>>>>\` markers. Resolve every marker (keep both your work and the base's intent), remove the markers, and write the normal completion signals so the orchestrator can record the merge. Only once the working tree is clean, finish the task and write DONE as usual.`
       : `## Rebased onto \`${baseBranch}\`\n\nThe base branch moved on and has been merged into your branch cleanly. Re-check that your work still applies on top of it, then finish and write DONE as usual.`;
-    const promptMd = `${preamble}\n\n---\n\n${plan.promptMd}`;
     const mergeTask = merged.conflicted
       ? "Follow the base-branch merge section at the top of your prompt: resolve every conflict marker while keeping both intents, then run `git diff --check` as this task's targeted verification."
       : "Follow the base-branch merge section at the top of your prompt: confirm the implementation still applies after the clean base-branch merge, then run `git diff --check` as this task's targeted verification.";
-    const planState = appendFeedbackTask(card.id, mergeTask);
+    await this.reloopWithTask(card, {
+      preamble,
+      task: mergeTask,
+      feedback: `merge conflict with ${baseBranch}: ${error}`,
+      reason: "merge conflict — resolving in loop",
+    });
+    return true;
+  }
+
+  /**
+   * Spec 33 decision 6: a red CI run on a Gitea pull request goes back to
+   * the loop the way a merge conflict does. `feedback` comes from CI, already
+   * scrubbed of the token, and its first line, `CI failed on <prUrl>`, is what
+   * the plan's version history shows.
+   */
+  private async reloopForCi(card: Card, feedback: string): Promise<void> {
+    await this.reloopWithTask(card, {
+      preamble: `## CI failed on the pull request: fix this first\n\n${feedback}\n\nFix these failures so the checks pass, then finish the task and write DONE as usual.`,
+      task: "Follow the CI failure section at the top of your prompt: make the failing checks pass, and run the failing commands locally where you can as this task's targeted verification.",
+      feedback: feedback.split("\n", 1)[0],
+      reason: "CI failed; fixing in the loop",
+    });
+  }
+
+  /**
+   * Re-enter the loop on the same worktree and branch with one more checklist
+   * task and a preamble on the prompt. The card goes straight to `ready`: no
+   * re-plan, no plan critic, no plan approval.
+   */
+  private async reloopWithTask(
+    card: Card,
+    input: { preamble: string; task: string; feedback: string; reason: string },
+  ): Promise<void> {
+    const plan = this.deps.latestPlan(card.id)!;
+    const planState = appendFeedbackTask(card.id, input.task);
     db.insert(plans)
       .values({
         id: nanoid(),
@@ -817,15 +850,14 @@ export class ReviewService {
         version: plan.version + 1,
         // The checklist this re-entry runs, so the version history shows it.
         planMd: planState ?? plan.planMd,
-        promptMd,
+        promptMd: `${input.preamble}\n\n---\n\n${plan.promptMd}`,
         acceptanceCriteria: plan.acceptanceCriteria,
-        feedback: `merge conflict with ${baseBranch}: ${error}`,
+        feedback: input.feedback,
         createdAt: now(),
       })
       .run();
     emitEvent("plan.created", { cardId: card.id, payload: { version: plan.version + 1 } });
-    this.deps.moveCard(card.id, card.status, "ready", "merge conflict — resolving in loop");
+    this.deps.moveCard(card.id, card.status, "ready", input.reason);
     this.deps.pump();
-    return true;
   }
 }

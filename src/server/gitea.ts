@@ -25,6 +25,19 @@ export async function giteaRequest<T>(
   apiPath: string,
   body?: unknown,
 ): Promise<T> {
+  const text = await giteaText(auth, method, apiPath, body);
+  if (text === "") return undefined as T;
+  return JSON.parse(text) as T;
+}
+
+/** The response body as text, for the endpoints that answer with plain text
+ * (a job log) as well as for `giteaRequest`. */
+async function giteaText(
+  auth: GiteaAuth,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  apiPath: string,
+  body?: unknown,
+): Promise<string> {
   const headers: Record<string, string> = {
     Authorization: `token ${auth.token}`,
     Accept: "application/json",
@@ -53,8 +66,7 @@ export async function giteaRequest<T>(
     }
     throw new GiteaError(message || `HTTP ${res.status}`, res.status);
   }
-  if (res.status === 204 || text === "") return undefined as T;
-  return JSON.parse(text) as T;
+  return text;
 }
 
 export function getAuthenticatedUser(auth: GiteaAuth): Promise<{ login: string }> {
@@ -185,6 +197,59 @@ export async function getCombinedStatus(
     state: r.total_count === 0 ? null : state,
     statuses: (r.statuses ?? []).map((s) => ({ context: s.context, state: s.status, targetUrl: s.target_url || null })),
   };
+}
+
+type FailedJob = { name: string; url: string | null; logTail: string };
+
+type ActionsRunJson = { id: number; head_sha: string };
+type ActionsJobJson = { id: number; name: string; conclusion: string | null; html_url: string | null };
+
+const LOG_TAIL_LINES = 60;
+const LOG_TAIL_CHARS = 4000;
+
+/**
+ * The failed Gitea Actions jobs that ran on `headSha`, each with the tail of
+ * its log, for the feedback a red CI run sends back to the loop (spec 33
+ * decision 6). Best effort, since the commit statuses already name and link
+ * each failing check: a log that cannot be read leaves `logTail` empty, a run
+ * whose jobs cannot be read adds none, and a run list that cannot be read
+ * gives no jobs at all.
+ */
+export async function failedJobLogs(
+  auth: GiteaAuth,
+  owner: string,
+  repo: string,
+  headSha: string,
+): Promise<FailedJob[]> {
+  const actions = `${repoPath(owner, repo)}/actions`;
+  let runs: ActionsRunJson[];
+  try {
+    const r = await giteaRequest<{ workflow_runs: ActionsRunJson[] | null }>(auth, "GET", `${actions}/runs?limit=20`);
+    runs = r.workflow_runs ?? [];
+  } catch {
+    return [];
+  }
+  const failed: FailedJob[] = [];
+  for (const run of runs.filter((r) => r.head_sha === headSha)) {
+    let jobs: ActionsJobJson[];
+    try {
+      const r = await giteaRequest<{ jobs: ActionsJobJson[] | null }>(auth, "GET", `${actions}/runs/${run.id}/jobs`);
+      jobs = r.jobs ?? [];
+    } catch {
+      continue;
+    }
+    for (const job of jobs.filter((j) => j.conclusion === "failure")) {
+      let logTail = "";
+      try {
+        const log = await giteaText(auth, "GET", `${actions}/jobs/${job.id}/logs`);
+        logTail = log.trimEnd().split("\n").slice(-LOG_TAIL_LINES).join("\n").slice(-LOG_TAIL_CHARS);
+      } catch {
+        // No log: the job is still named and linked.
+      }
+      failed.push({ name: job.name, url: job.html_url || null, logTail });
+    }
+  }
+  return failed;
 }
 
 /** Gitea's and Forgejo's 409 when the branch head is not `head_commit_id`. */

@@ -24,7 +24,7 @@ import { ClientError } from "./clientError";
 import { emitEvent } from "./events";
 import { checkConnection, connectionAuth, invalidateConnectionCheck, scrubSecret } from "./forgeConnections";
 import { matchRepo, type ForgeRepoRef } from "./forgeMatch";
-import { closePull, createPull, deleteBranch, findOpenPull, getCombinedStatus, getPull, mergePull } from "./gitea";
+import { closePull, createPull, deleteBranch, failedJobLogs, findOpenPull, getCombinedStatus, getPull, mergePull } from "./gitea";
 import { GiteaError, type GiteaAuth, type GiteaCombinedStatus, type GiteaPull } from "./gitea";
 import { fetchBranchHead, git, mergeBaseIntoWorktree, pushRef, stripRalphForDelivery } from "./git";
 import { recordRefWrite } from "./integrity";
@@ -49,6 +49,9 @@ export const CI_GRACE_MS = 2 * 60_000;
 export const CI_TIMEOUT_MS = 2 * 60 * 60_000;
 /** Per wait, so a worker tick every few seconds does not hammer Gitea. */
 export const POLL_INTERVAL_MS = 15_000;
+/** Spec 33 decision 6: red CI runs a card goes back to the loop for; the
+ * next one sends it to Needs Attention. */
+export const MAX_CI_ROUNDS = 2;
 
 /** No response at all, or Gitea down or restarting: ask again on a later
  * tick rather than fail the card. */
@@ -67,6 +70,7 @@ export type GiteaDeliveryHooks = {
     error: string,
     merged: Awaited<ReturnType<typeof mergeBaseIntoWorktree>>,
   ): Promise<boolean>;
+  reloopForCi(card: Card, feedback: string): Promise<void>;
   completeApproval(
     card: Card,
     run: Run,
@@ -338,7 +342,7 @@ export class GiteaDelivery {
     } catch (e) {
       return readFailed(e);
     }
-    if (ci.state === "failure" || ci.state === "error") return this.handleCiFailure(wait, ci.statuses, auth);
+    if (ci.state === "failure" || ci.state === "error") return this.handleCiFailure(wait, card, ci.statuses, auth);
     if (ci.state === "pending") {
       if (sincePush >= CI_TIMEOUT_MS) this.park(wait, "awaiting_ci", "timed_out", timedOut);
       return;
@@ -356,13 +360,43 @@ export class GiteaDelivery {
   }
 
   /**
-   * Spec 33 decision 6 sends a red CI run back to the loop. Until that is
-   * built, the card goes to Needs Attention naming the failing checks.
+   * Spec 33 decision 6: a red CI run goes back to the loop the way a merge
+   * conflict does, with feedback that names and links each failing check and
+   * carries its log tail where Gitea Actions has one. The `ci_failed` rows
+   * this card already has are its round-trips so far; one more than
+   * `MAX_CI_ROUNDS` parks it instead. The card is held in `reviewing` while
+   * the logs are read, so Abandon and other workers leave it alone, as they
+   * do during a merge.
    */
-  private async handleCiFailure(wait: Wait, statuses: GiteaCombinedStatus["statuses"], auth: GiteaAuth) {
-    const failing = statuses.filter((s) => s.state === "failure" || s.state === "error").map((s) => s.context);
-    const reason = `CI failed on ${wait.prUrl}${failing.length ? `: ${failing.join(", ")}` : ""}`;
-    this.park(wait, "awaiting_ci", "failed", scrubSecret(reason, auth.token));
+  private async handleCiFailure(
+    wait: Wait,
+    card: Card,
+    statuses: GiteaCombinedStatus["statuses"],
+    auth: GiteaAuth,
+  ) {
+    const rounds = db
+      .select({ id: prWaits.id })
+      .from(prWaits)
+      .where(and(eq(prWaits.cardId, wait.cardId), eq(prWaits.status, "ci_failed")))
+      .all().length;
+    if (rounds >= MAX_CI_ROUNDS) {
+      const reason = `CI failed ${rounds + 1} times on ${wait.prUrl}; stopping so it does not loop forever`;
+      return this.park(wait, "awaiting_ci", "ci_failed", reason);
+    }
+    const headline = `CI failed on ${wait.prUrl}`;
+    if (!this.hooks.moveCard(card.id, "awaiting_ci", "reviewing", headline)) return;
+    const failing = statuses.filter((s) => s.state === "failure" || s.state === "error");
+    const lines = [headline, ...failing.map((s) => (s.targetUrl ? `- ${s.context}: ${s.targetUrl}` : `- ${s.context}`))];
+    this.endWait(wait.id, "ci_failed", scrubSecret(lines.join("\n"), auth.token));
+    try {
+      for (const job of await failedJobLogs(auth, wait.owner, wait.repo, wait.headSha)) {
+        lines.push("", `${job.name}${job.url ? ` (${job.url})` : ""}:`, "```", job.logTail, "```");
+      }
+      await this.hooks.reloopForCi({ ...card, status: "reviewing" }, scrubSecret(lines.join("\n"), auth.token));
+    } catch (e) {
+      const reason = `cannot send the CI failure on ${wait.prUrl} back to the loop: ${errorMessage(e)}`;
+      this.park(wait, "reviewing", "ci_failed", scrubSecret(reason, auth.token));
+    }
   }
 
   /**

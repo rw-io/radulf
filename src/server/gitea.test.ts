@@ -4,6 +4,7 @@ import {
   closePull,
   createPull,
   deleteBranch,
+  failedJobLogs,
   findOpenPull,
   getCombinedStatus,
   getPull,
@@ -235,5 +236,74 @@ describe("ci wait and merge", () => {
     const err = (await mergePull(auth, "o", "r", 7, "t", "head-1").catch((e: unknown) => e)) as GiteaError;
     expect(err).toBeInstanceOf(GiteaError);
     expect(err.status).toBe(502);
+  });
+});
+
+describe("failed job logs", () => {
+  const auth = { baseUrl: "https://h", token: "t" };
+  const lines = (n: number, width = 0) =>
+    Array.from({ length: n }, (_, i) => `line ${i + 1}`.padEnd(width, "x"));
+
+  /** Answers each Actions path from `routes`, and 404 for anything else. */
+  function stubRoutes(routes: Record<string, () => Response>) {
+    const fetchMock = vi.fn(async (url: string) => {
+      const route = routes[url.replace("https://h/api/v1/repos/o/r", "")];
+      return route ? route() : new Response('{"message":"not found"}', { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+  const json = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200 });
+
+  it("failedJobLogs keeps only the failed jobs of the head commit", async () => {
+    const fetchMock = stubRoutes({
+      "/actions/runs?limit=20": json({
+        workflow_runs: [
+          { id: 1, head_sha: "head-1" },
+          { id: 2, head_sha: "other" },
+          // Its job list cannot be read: no jobs from it, and no error.
+          { id: 3, head_sha: "head-1" },
+        ],
+      }),
+      "/actions/runs/1/jobs": json({
+        jobs: [
+          { id: 11, name: "build", conclusion: "failure", html_url: "https://h/o/r/actions/runs/1/jobs/0" },
+          { id: 12, name: "lint", conclusion: "success", html_url: "https://h/o/r/actions/runs/1/jobs/1" },
+          { id: 13, name: "test", conclusion: "failure", html_url: "" },
+        ],
+      }),
+      "/actions/runs/2/jobs": json({
+        jobs: [{ id: 21, name: "build", conclusion: "failure", html_url: "https://h/o/r/actions/runs/2/jobs/0" }],
+      }),
+      "/actions/jobs/11/logs": () => new Response(`${lines(100).join("\n")}\n`, { status: 200 }),
+      "/actions/jobs/13/logs": () => new Response("bad gateway", { status: 502 }),
+    });
+
+    const jobs = await failedJobLogs(auth, "o", "r", "head-1");
+
+    expect(jobs).toEqual([
+      { name: "build", url: "https://h/o/r/actions/runs/1/jobs/0", logTail: lines(100).slice(-60).join("\n") },
+      { name: "test", url: null, logTail: "" },
+    ]);
+    const urls = fetchMock.mock.calls.map(([url]) => url);
+    expect(urls).not.toContain("https://h/api/v1/repos/o/r/actions/runs/2/jobs");
+    expect(urls).not.toContain("https://h/api/v1/repos/o/r/actions/jobs/12/logs");
+  });
+
+  it("failedJobLogs caps a tail at 4000 characters and gives nothing when the run list fails", async () => {
+    const long = lines(60, 100);
+    stubRoutes({
+      "/actions/runs?limit=20": json({ workflow_runs: [{ id: 1, head_sha: "head-1" }] }),
+      "/actions/runs/1/jobs": json({ jobs: [{ id: 11, name: "build", conclusion: "failure", html_url: null }] }),
+      "/actions/jobs/11/logs": () => new Response(long.join("\n"), { status: 200 }),
+    });
+
+    const [job] = await failedJobLogs(auth, "o", "r", "head-1");
+
+    expect(job.logTail).toHaveLength(4000);
+    expect(job.logTail.endsWith(long.at(-1)!)).toBe(true);
+
+    stubRoutes({ "/actions/runs?limit=20": () => new Response("bad gateway", { status: 502 }) });
+    expect(await failedJobLogs(auth, "o", "r", "head-1")).toEqual([]);
   });
 });
