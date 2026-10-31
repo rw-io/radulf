@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -354,6 +355,24 @@ describe("precheckAcceptance", () => {
     expect(report.alreadyPassing).toEqual([]);
     expect(report.failing).toEqual([]);
     expect(report.checked).toBe(2);
+  });
+
+  it("leaves no process behind when a check times out", async () => {
+    // exec's timeout signals only the shell it started, never the shell's
+    // children, so a hung check used to outlive the probe forever.
+    fs.writeFileSync(path.join(dir, "orphan.txt"), "");
+    const report = await precheckAcceptance({
+      acceptanceCriteria: "`tail -f orphan.txt` fails",
+      worktreePath: dir,
+      ctx,
+      timeoutMs: 200,
+    });
+    expect(report.unprobed).toEqual(["tail -f orphan.txt"]);
+    const marker = `${path.basename(dir)}/orphan.txt`;
+    const survivors = execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.startsWith("tail -f") && line.includes(marker));
+    expect(survivors).toEqual([]);
   });
 
   it("runs nothing once the signal has fired", async () => {

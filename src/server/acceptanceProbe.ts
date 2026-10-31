@@ -1,13 +1,10 @@
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-import type { RunSandboxContext } from "./sandbox/context";
+import { reapProcessGroups, type RunSandboxContext } from "./sandbox/context";
 import { guardPath, realpathBestEffort } from "./sandbox/pathGuard";
 import { runSandboxedCommand } from "./sandbox/srt";
 import { errorMessage } from "@/shared/errorMessage";
-
-const execAsync = promisify(exec);
 
 /**
  * Checking a DONE claim before paying for an evaluation.
@@ -425,22 +422,53 @@ async function execCheck(
   env: NodeJS.ProcessEnv | undefined,
   timeoutMs: number = PROBE_TIMEOUT_MS,
 ): Promise<{ ran: boolean; exitZero: boolean; output: string }> {
-  const trimmed = (stdout: string | undefined, stderr: string | undefined) =>
-    `${stdout ?? ""}${stderr ?? ""}`.trim().slice(0, PROBE_OUTPUT_CHARS);
-  try {
-    const { stdout, stderr } = await execAsync(toRun, { cwd, env, timeout: timeoutMs, maxBuffer: PROBE_MAX_BUFFER });
-    return { ran: true, exitZero: true, output: trimmed(stdout, stderr) };
-  } catch (e) {
-    const err = e as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
-    // A timeout or a missing binary says nothing about the criterion — only a
-    // command that ran to an exit status does. 127 belongs in that list even
-    // though it is a number: the command goes through `exec`, so a missing one
-    // exits 127 with a NUMERIC code and the non-numeric test alone misses it.
-    if (err.killed || typeof err.code !== "number" || err.code === 127) {
-      return { ran: false, exitZero: false, output: "" };
+  // The shell leads its own process group, and the whole group is reaped on
+  // every way out. A timeout that signals only the shell (all `exec` can do:
+  // it drops `detached`) leaves the check itself, a `tail -f` that never exits
+  // say, running forever as an orphan.
+  const groups = process.platform !== "win32";
+  const child = spawn("/bin/sh", ["-c", toRun], { cwd, env, detached: groups, stdio: ["ignore", "pipe", "pipe"] });
+  const killGroup = () => {
+    try {
+      if (child.pid) process.kill(groups ? -child.pid : child.pid, "SIGKILL");
+    } catch {
+      // Already gone.
     }
-    return { ran: true, exitZero: false, output: trimmed(err.stdout, err.stderr) };
+  };
+  const result = await new Promise<{ code: number | null; stopped: boolean; stdout: string; stderr: string }>((resolve) => {
+    const out = { stdout: "", stderr: "" };
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+      killGroup();
+    };
+    for (const name of ["stdout", "stderr"] as const) {
+      child[name].setEncoding("utf8");
+      child[name].on("data", (chunk: string) => {
+        if (out.stdout.length + out.stderr.length + chunk.length > PROBE_MAX_BUFFER) return stop();
+        out[name] += chunk;
+      });
+    }
+    const timer = setTimeout(stop, timeoutMs);
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve({ code: null, stopped: true, ...out });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stopped, ...out });
+    });
+  });
+  if (groups && child.pid) await reapProcessGroups([child.pid]);
+  // A timeout or a missing binary says nothing about the criterion; only a
+  // command that ran to an exit status does. 127 belongs in that list even
+  // though it is a number: the command goes through a shell, so a missing one
+  // exits 127 with a NUMERIC code and the non-numeric test alone misses it.
+  if (result.stopped || result.code === null || result.code === 127) {
+    return { ran: false, exitZero: false, output: "" };
   }
+  const output = `${result.stdout}${result.stderr}`.trim().slice(0, PROBE_OUTPUT_CHARS);
+  return { ran: true, exitZero: result.code === 0, output };
 }
 
 export type PrecheckReport = {
