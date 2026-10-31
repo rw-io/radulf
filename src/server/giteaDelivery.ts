@@ -26,7 +26,7 @@ import { checkConnection, connectionAuth, invalidateConnectionCheck, scrubSecret
 import { matchRepo, type ForgeRepoRef } from "./forgeMatch";
 import { closePull, createPull, deleteBranch, failedJobLogs, findOpenPull, getCombinedStatus, getPull, mergePull } from "./gitea";
 import { GiteaError, type GiteaAuth, type GiteaCombinedStatus, type GiteaPull } from "./gitea";
-import { fetchBranchHead, git, mergeBaseIntoWorktree, pushRef, stripRalphForDelivery } from "./git";
+import { fetchBranchHead, git, localOnlyCommits, mergeBaseIntoWorktree, pushRef, stripRalphForDelivery } from "./git";
 import { recordRefWrite } from "./integrity";
 import type { DoneOutcome } from "./jiraAnnounce";
 import { forgeTarget } from "./remoteTarget";
@@ -52,6 +52,8 @@ export const POLL_INTERVAL_MS = 15_000;
 /** Spec 33 decision 6: red CI runs a card goes back to the loop for; the
  * next one sends it to Needs Attention. */
 export const MAX_CI_ROUNDS = 2;
+/** Local-only commits a blocked delivery names; the rest are counted. */
+const LOCAL_ONLY_LISTED = 5;
 
 /** No response at all, or Gitea down or restarting: ask again on a later
  * tick rather than fail the card. */
@@ -179,6 +181,18 @@ export class GiteaDelivery {
         return failed(error);
       }
       if (!merged.ok) return failed(`cannot merge ${baseBranch} into the branch: ${merged.out}`);
+
+      // The remote base is in now, but the local one may have put commits in
+      // the branch the remote has never seen (spec 29's sync, or the branch
+      // point): the PR would merge them, unreviewed. Nothing is pushed.
+      const localOnly = await localOnlyCommits(run.worktreePath, baseBranch, fetched.sha);
+      if (localOnly.length > 0) {
+        const listed = localOnly.slice(0, LOCAL_ONLY_LISTED).join("; ");
+        const rest = localOnly.length - LOCAL_ONLY_LISTED;
+        return failed(
+          `the branch carries commits from the local \`${baseBranch}\` that ${host} does not have, so the pull request would merge them unreviewed: ${listed}${rest > 0 ? ` and ${rest} more` : ""}. Push them to ${host} first, then press Retry merge.`,
+        );
+      }
 
       const stripped = await stripRalphForDelivery(
         run.worktreePath,

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   fetchBranchHead: vi.fn(),
   pushRef: vi.fn(),
   git: vi.fn(),
+  localOnlyCommits: vi.fn(),
   findOpenPull: vi.fn(),
   createPull: vi.fn(),
   matchRepo: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("./git", async (importOriginal) => ({
   fetchBranchHead: mocks.fetchBranchHead,
   pushRef: mocks.pushRef,
   git: mocks.git,
+  localOnlyCommits: mocks.localOnlyCommits,
 }));
 vi.mock("./gitea", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./gitea")>()),
@@ -222,6 +224,7 @@ describe("ReviewService: spec 33 Gitea pull request delivery", () => {
     mocks.fetchBranchHead.mockResolvedValue({ ok: true, sha: "remote-base-sha" });
     mocks.pushRef.mockResolvedValue({ ok: true });
     mocks.git.mockResolvedValue("local-head-sha");
+    mocks.localOnlyCommits.mockResolvedValue([]);
     mocks.findOpenPull.mockResolvedValue(null);
     mocks.createPull.mockResolvedValue(PULL);
     mocks.matchRepo.mockResolvedValue(FORGE);
@@ -300,6 +303,45 @@ describe("ReviewService: spec 33 Gitea pull request delivery", () => {
       mocks.createPull.mock.invocationCallOrder[0],
     ];
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("a local-only commit on the local base that reached the branch blocks delivery", async () => {
+    seedCard("card-local-only");
+    const run = seedRun("card-local-only");
+    mocks.localOnlyCommits.mockResolvedValue([
+      "abc1234 operator's unpushed fix",
+      "def5678 sibling card merge whose push failed",
+    ]);
+    const deps = makeDeps();
+
+    const result = await new ReviewService(deps).approve(run.id);
+
+    expect(result.ok).toBe(false);
+    expect(mocks.localOnlyCommits).toHaveBeenCalledWith(run.worktreePath, "main", "remote-base-sha");
+    expect(statusOf("card-local-only")).toBe("needs_attention");
+    const reason = lastReason(deps)!;
+    expect(reason).toContain("`main`");
+    expect(reason).toContain("gitea.example");
+    expect(reason).toContain("abc1234 operator's unpushed fix; def5678 sibling card merge whose push failed");
+    expect(mocks.stripRalphForDelivery).not.toHaveBeenCalled();
+    expect(mocks.pushRef).not.toHaveBeenCalled();
+    expect(mocks.createPull).not.toHaveBeenCalled();
+    expect(mocks.mergeBranch).not.toHaveBeenCalled();
+    expect(db.select().from(prWaits).all()).toHaveLength(0);
+  });
+
+  it("lists at most five local-only commits and counts the rest", async () => {
+    seedCard("card-many-local");
+    const run = seedRun("card-many-local");
+    mocks.localOnlyCommits.mockResolvedValue(["c1 one", "c2 two", "c3 three", "c4 four", "c5 five", "c6 six", "c7 seven"]);
+    const deps = makeDeps();
+
+    await new ReviewService(deps).approve(run.id);
+
+    const reason = lastReason(deps)!;
+    expect(reason).toContain("c1 one; c2 two; c3 three; c4 four; c5 five and 2 more");
+    expect(reason).not.toContain("c6 six");
+    expect(mocks.pushRef).not.toHaveBeenCalled();
   });
 
   it("reuses an open pr", async () => {

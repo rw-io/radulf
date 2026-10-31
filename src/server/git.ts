@@ -648,6 +648,28 @@ export async function mergeBaseIntoWorktree(
   return { ok: false, conflicted, out: res.out };
 }
 
+/**
+ * Spec 33: the commits HEAD carries from the local `base` that the remote's
+ * base (`remoteSha`) does not have, newest first, as `<short sha> <subject>`.
+ * A card branch is cut from the local base and spec 29 syncs the local base
+ * into it, so these are local-only commits a pull request against the remote
+ * base would carry in, though the in-app review, diffed against the local
+ * base, never showed them. None when there is no local `base`.
+ */
+export async function localOnlyCommits(cwd: string, base: string, remoteSha: string): Promise<string[]> {
+  const local = await tryGit(cwd, "rev-parse", "--verify", "--quiet", `refs/heads/${base}^{commit}`);
+  if (!local.ok) return [];
+  // Everything HEAD took from the local base is reachable from these.
+  const shared = await tryGit(cwd, "merge-base", "--all", "HEAD", local.out);
+  if (!shared.ok) {
+    // No output is no common history; anything else is a real failure.
+    if (shared.out) throw new Error(`cannot compare HEAD with \`${base}\`: ${shared.out}`);
+    return [];
+  }
+  const out = await git(cwd, "log", "--format=%h %s", ...shared.out.split("\n"), `^${remoteSha}`, "--");
+  return out ? out.split("\n") : [];
+}
+
 // ─── Spec 15: remote delivery ────────────────────────────────────────────────
 //
 // Everything below is the ONLY part of this module that touches a remote, and

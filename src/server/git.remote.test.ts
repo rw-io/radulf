@@ -16,7 +16,7 @@ vi.mock("./exec", async (importOriginal) => {
 setupTestDataDir("radulf-git-remote-");
 
 const { execBounded } = await import("./exec");
-const { cloneRemote, fetchBranchHead, forgeGitEnv, pushRef } = await import("./git");
+const { cloneRemote, fetchBranchHead, forgeGitEnv, localOnlyCommits, pushRef } = await import("./git");
 
 const TOKEN = "tok-xyz";
 const FORGE_URL = "https://gitea.example/o/r.git";
@@ -73,6 +73,35 @@ afterEach(() => {
 
 afterAll(() => {
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("localOnlyCommits (spec 33)", () => {
+  it("lists the local base's unpushed commits the card branch carries, and nothing else", async () => {
+    const { bare, clone } = remoteAndClone();
+    const local = commit(clone, "operator-fix.txt");
+    git(clone, "checkout", "-qb", "ralph/card");
+    commit(clone, "card-work.txt");
+    const remoteTip = advanceRemote(bare, "teammate.txt");
+    const fetched = await fetchBranchHead(clone, { kind: "origin" }, "main");
+    expect(fetched).toEqual({ ok: true, sha: remoteTip });
+    git(clone, "merge", "-q", "--no-edit", remoteTip);
+
+    const found = await localOnlyCommits(clone, "main", remoteTip);
+
+    expect(found).toEqual([`${local.slice(0, 7)} operator-fix.txt`]);
+  });
+
+  it("finds none when the local base has nothing the remote lacks", async () => {
+    const { bare, clone } = remoteAndClone();
+    git(clone, "checkout", "-qb", "ralph/card");
+    commit(clone, "card-work.txt");
+    const remoteTip = advanceRemote(bare, "teammate.txt");
+    await fetchBranchHead(clone, { kind: "origin" }, "main");
+    git(clone, "merge", "-q", "--no-edit", remoteTip);
+
+    expect(await localOnlyCommits(clone, "main", remoteTip)).toEqual([]);
+    expect(await localOnlyCommits(clone, "no-such-branch", remoteTip)).toEqual([]);
+  });
 });
 
 describe("fetchBranchHead", () => {
