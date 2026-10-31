@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RunSandboxContext } from "./sandbox/context";
 import {
   GATE_OUTPUT_CHARS,
@@ -24,6 +25,34 @@ const ctx = {
   reap: async () => [],
 } as unknown as RunSandboxContext;
 const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "radulf-gate-"));
+
+/** The process group `pid` runs in, or null once it is gone. */
+function groupOf(pid: number): number | null {
+  try {
+    return Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+  } catch {
+    return null;
+  }
+}
+
+/** Still running: not gone, and not a zombie waiting to be collected. */
+function running(pid: number): boolean {
+  try {
+    const stat = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return stat !== "" && !stat.startsWith("Z");
+  } catch {
+    return false;
+  }
+}
+
+/** Kill a process a failed assertion would otherwise leave running. */
+function cleanUp(pid: number) {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
 
 describe("runGateCommand", () => {
   it("reports a passing command with its output", async () => {
@@ -71,7 +100,7 @@ describe("runGateCommand", () => {
     await expect(pending).rejects.toThrow();
   });
 
-  it("tracks a background process group so the caller's reap can kill it", async () => {
+  it("runs the gate in its own tracked process group, so the caller's reap kills what it left behind", async () => {
     const pgids = new Set<number>();
     const reaping = {
       ...ctx,
@@ -79,15 +108,49 @@ describe("runGateCommand", () => {
       reap: () => reapProcessGroups(pgids),
     } as unknown as RunSandboxContext;
     const result = await runGateCommand({
-      command: "nohup sleep 60 >/dev/null 2>&1 &",
+      command: "sleep 60 >/dev/null 2>&1 & echo $!",
       worktreePath,
       ctx: reaping,
       timeoutMs: 5_000,
     });
-    expect(result).toMatchObject({ exitCode: 0, error: null });
-    expect(await reaping.reap()).toEqual([]);
-    const [pgid] = [...pgids];
-    expect(() => process.kill(-pgid, 0)).toThrow();
+    const pid = Number(result.output);
+    try {
+      expect(result).toMatchObject({ exitCode: 0, error: null });
+      const [pgid] = [...pgids];
+      // The background sleep outlived the shell, inside the group the gate
+      // tracked, not in the test runner's own group.
+      expect(running(pid)).toBe(true);
+      expect(groupOf(pid)).toBe(pgid);
+      expect(pgid).not.toBe(groupOf(process.pid));
+      expect(await reaping.reap()).toEqual([]);
+      await vi.waitFor(() => expect(running(pid)).toBe(false));
+    } finally {
+      cleanUp(pid);
+    }
+  });
+
+  it("a timed out gate leaves none of its processes behind", async () => {
+    const result = await runGateCommand({ command: "sleep 30 & echo $!; wait", worktreePath, ctx, timeoutMs: 300 });
+    const pid = Number(result.output);
+    try {
+      expect(result).toMatchObject({ exitCode: null, timedOut: true, error: null });
+      expect(pid).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(running(pid)).toBe(false));
+    } finally {
+      cleanUp(pid);
+    }
+  });
+
+  it("reports a command that floods its output as over the buffer", async () => {
+    const result = await runGateCommand({ command: "yes", worktreePath, ctx, timeoutMs: 10_000 });
+    expect(result).toMatchObject({ exitCode: null, timedOut: false, error: "output exceeded the gate's buffer" });
+  });
+
+  it("reports a missing working directory as a gate that did not run", async () => {
+    const result = await runGateCommand({ command: "true", worktreePath: path.join(worktreePath, "missing"), ctx, timeoutMs: 5_000 });
+    expect(result.exitCode).toBeNull();
+    expect(result.timedOut).toBe(false);
+    expect(result.error).toBeTruthy();
   });
 });
 

@@ -1,44 +1,9 @@
-import { exec, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { ralphDirPath } from "./bookkeeping";
 import type { RunSandboxContext } from "./sandbox/context";
 import { runSandboxedCommand } from "./sandbox/srt";
 import { errorMessage } from "@/shared/errorMessage";
-
-// Node forwards spawn options such as `detached` through `exec`, but its public
-// ExecOptions type omits that field. Keep the narrow cast here and cover the
-// process-group behavior with the live reaping regression in gate.test.ts.
-const execDetached = exec as unknown as (
-  command: string,
-  options: {
-    cwd: string;
-    env?: NodeJS.ProcessEnv;
-    timeout: number;
-    maxBuffer: number;
-    signal?: AbortSignal;
-    detached: true;
-  },
-  callback: (error: Error | null, stdout: string, stderr: string) => void,
-) => ChildProcess;
-
-function execDetachedAsync(
-  command: string,
-  options: Parameters<typeof execDetached>[1],
-  ctx: RunSandboxContext,
-): Promise<{ stdout: string; stderr: string }> {
-  ctx.markCommandStarted();
-  return new Promise((resolve, reject) => {
-    const child = execDetached(command, options, (error, stdout, stderr) => {
-      if (error) {
-        Object.assign(error, { stdout, stderr });
-        reject(error);
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
-    if (child.pid && process.platform !== "win32") ctx.trackProcessGroup(child.pid);
-  });
-}
 
 /**
  * Spec 27: the repository gate, run by the orchestrator so the evaluator
@@ -90,31 +55,63 @@ async function execute(
   signal: AbortSignal | undefined,
   ctx: RunSandboxContext,
 ): Promise<Outcome> {
-  try {
-    const { stdout, stderr } = await execDetachedAsync(toRun, {
-      cwd,
-      timeout,
-      maxBuffer: GATE_MAX_BUFFER,
-      ...(env ? { env } : {}),
-      ...(signal ? { signal } : {}),
-      // The command prefix records the shell pid as a process-group id. Give
-      // the gate its own group so post-command reaping can actually kill any
-      // background descendants before the trusted process writes GATE.md.
-      detached: true,
-    }, ctx);
-    return { exitCode: 0, timedOut: false, error: null, output: tail(`${stdout}${stderr}`) };
-  } catch (e) {
-    // Cancelled from outside: the caller owns that outcome.
-    if (signal?.aborted) throw e;
-    const err = e as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
-    const output = tail(`${err.stdout ?? ""}${err.stderr ?? ""}`);
-    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-      return { exitCode: null, timedOut: false, error: "output exceeded the gate's buffer", output };
+  // The shell leads its own process group, tracked so the callers' reap
+  // kills whatever a finished gate left in the background before the trusted
+  // process writes GATE.md. Every way out the gate itself takes (its timeout,
+  // a full buffer, an abort) kills the whole group: a signal to the shell
+  // alone leaves a hung command's children running, holding the output pipes.
+  const groups = process.platform !== "win32";
+  ctx.markCommandStarted();
+  const child = spawn("/bin/sh", ["-c", toRun], { cwd, env, detached: groups, stdio: ["ignore", "pipe", "pipe"] });
+  if (groups && child.pid) ctx.trackProcessGroup(child.pid);
+  const killGroup = () => {
+    try {
+      if (child.pid) process.kill(groups ? -child.pid : child.pid, "SIGKILL");
+    } catch {
+      // Already gone.
     }
-    if (err.killed) return { exitCode: null, timedOut: true, error: null, output };
-    if (typeof err.code === "number") return { exitCode: err.code, timedOut: false, error: null, output };
-    return { exitCode: null, timedOut: false, error: errorMessage(e), output };
-  }
+  };
+  const ended = await new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stopped: "timeout" | "buffer" | "abort" | null;
+    error: Error | null;
+    stdout: string;
+    stderr: string;
+  }>((resolve) => {
+    const out = { stdout: "", stderr: "" };
+    let stopped: "timeout" | "buffer" | "abort" | null = null;
+    const stop = (why: "timeout" | "buffer" | "abort") => {
+      stopped ??= why;
+      killGroup();
+    };
+    for (const name of ["stdout", "stderr"] as const) {
+      child[name].setEncoding("utf8");
+      child[name].on("data", (chunk: string) => {
+        if (out[name].length + chunk.length > GATE_MAX_BUFFER) return stop("buffer");
+        out[name] += chunk;
+      });
+    }
+    const timer = setTimeout(() => stop("timeout"), timeout);
+    const onAbort = () => stop("abort");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    const finish = (code: number | null, exitSignal: NodeJS.Signals | null, error: Error | null) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ code, signal: exitSignal, stopped, error, ...out });
+    };
+    child.on("error", (error) => finish(null, null, error));
+    child.on("close", (code, exitSignal) => finish(code, exitSignal, null));
+  });
+  // Cancelled from outside: the caller owns that outcome.
+  if (signal?.aborted) throw new Error("the gate was cancelled", { cause: signal.reason });
+  const output = tail(`${ended.stdout}${ended.stderr}`);
+  if (ended.stopped === "buffer") return { exitCode: null, timedOut: false, error: "output exceeded the gate's buffer", output };
+  if (ended.stopped === "timeout") return { exitCode: null, timedOut: true, error: null, output };
+  if (ended.error) return { exitCode: null, timedOut: false, error: errorMessage(ended.error), output };
+  if (ended.code !== null) return { exitCode: ended.code, timedOut: false, error: null, output };
+  return { exitCode: null, timedOut: false, error: `killed by ${ended.signal ?? "a signal"}`, output };
 }
 
 /**
