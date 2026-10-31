@@ -92,6 +92,18 @@ the pieces that make that safe are:
   takes the repo's `repo_leases` row before running the merge or pull-request
   delivery, and records the base branch's new oid in `ref_writes` (spec 25
   decision 6). See [Git](#git).
+- **Pull requests waiting for CI.** A card delivered to Gitea or Forgejo
+  (spec 33) waits in `awaiting_ci` on a `pr_waits` row and holds no lease.
+  On every pump, `pollPullRequestWaits` (`src/server/giteaDelivery.ts`) takes
+  each `waiting` row one step, reading the pull request and its combined
+  commit status at most every 15 seconds. To merge it, or to hand a red CI
+  run back to the loop, the poller retakes the repo lease and moves the card
+  to `reviewing`, as a delivery does, and ends the wait only once that step
+  is done. A restart in the middle leaves a `waiting` row behind a
+  `reviewing` card: boot recovery sends it back to `awaiting_ci` when no
+  delivery is open and no live worker holds the lease, and the shutdown
+  drain waits for the step (`hasInFlightWork`). Abandon, Reset and Delete
+  close a pull request the card left open (`closeOpenPullRequest`).
 
 ## The orchestrator
 
@@ -326,7 +338,17 @@ the agent created, whose config it would otherwise execute, and `stageAll`
 drops any such gitlink before every commit Radulf makes. `offRunBranchReason` refuses to commit into a worktree that has left its
 run branch or whose `.git` pointer no longer leads to the repository.
 
-`mergeBranch` is the one write to the user's repo. Before touching anything it
+Radulf writes to the user's repo, and since spec 33 to its remote, only from
+the review path, under the repo's lease, and never forces, resets or rewrites
+anything. The writes are `mergeBranch`, which merges an approved card into the
+base branch; `reconcileBase` (`src/server/baseReconcile.ts`), which, when a
+delivery pushes, first brings the local base level with the remote's by a
+fast-forward (`fastForwardBranch`) or a merge commit made with `mergeBranch`,
+and does the same after a Gitea merge; and the pushes: `pushBase` sends the
+base branch after a local merge, and the Gitea path pushes the card's branch
+from its worktree (`pushRef`).
+
+Before touching anything `mergeBranch`
 looks for a merge already in progress in the parent checkout: if `MERGE_HEAD`
 is this run branch (a delivery worker died between `merge --no-commit` and
 `commit`) it runs `git merge --abort` and starts over; any other `MERGE_HEAD`
@@ -350,10 +372,10 @@ tampering.
 ## Persistence
 
 `src/db/schema.ts`, Drizzle over SQLite, created on first run with no manual
-migration step. Sixteen tables: `repos`, `cards`, `plans`, `scopingMessages`,
+migration step. Eighteen tables: `repos`, `cards`, `plans`, `scopingMessages`,
 `runs`, `workers`, `iterations`, `reviews`, `events`, `improvementRuns`,
-`schedules`, `settings`, `worktrees`, `reviewDeliveries`, `repoLeases`,
-`refWrites`.
+`schedules`, `settings`, `forgeConnections`, `worktrees`, `reviewDeliveries`,
+`prWaits`, `repoLeases`, `refWrites`.
 
 Transcripts are **not** in the database — they are JSONL files on disk, read in
 chunks by `src/server/transcript.ts` (`TRANSCRIPT_CHUNK_BYTES`, 512 KB). A long
